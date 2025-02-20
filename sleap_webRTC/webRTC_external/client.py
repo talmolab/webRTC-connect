@@ -153,7 +153,7 @@ async def run_client(pc, peer_id: str, port_number: str):
 
     # 1. client registers with the signaling server (temp: localhost:8080) via websocket connection
     # this is how the client will know the worker peer exists
-    async with websockets.connect(f"ws://localhost:{port_number}") as websocket:
+    async with websockets.connect(f"ws://10.21.4.44:{port_number}") as websocket:
         # 1a. register the client with the signaling server
         await websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
         logging.info(f"{peer_id} sent to signaling server for registration!")

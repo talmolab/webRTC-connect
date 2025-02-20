@@ -8,7 +8,7 @@
 	},
 	"forwardPorts": [],
     "runArgs": [
-      "--gpus=all",
+      // "--gpus=all",
     ],
 	"customizations": {
 		"vscode": {

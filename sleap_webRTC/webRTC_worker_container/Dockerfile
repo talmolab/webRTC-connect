@@ -24,7 +24,7 @@ COPY worker.py /app/worker.py
 # Ensure executable
 RUN chmod +x /app/worker.py
 
-# Port exposed by the container, NOT computer (localhost)
+# Port exposed by the container, NOT computer (localhost), 8080 = websocket server, 3478 = TURN server
 EXPOSE 8080 5000 3478/udp 3478/tcp
 
 # Signaling server -> worker -> client in sequenece

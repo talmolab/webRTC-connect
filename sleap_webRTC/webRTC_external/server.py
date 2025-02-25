@@ -109,7 +109,7 @@ async def main():
 		Exception: An error occurred while handling the client
     """
 
-    async with websockets.serve(handle_client, "10.21.4.44", 8080):
+    async with websockets.serve(handle_client, "0.0.0.0", 8080):
         # run server indefinitely
         logging.info("Server started!")
         await asyncio.Future()

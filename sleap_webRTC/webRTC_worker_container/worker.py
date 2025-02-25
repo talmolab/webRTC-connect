@@ -132,7 +132,7 @@ async def run_worker(pc, peer_id, port_number):
 
     # 1. worker registers with the signaling server (temp: localhost:8080) via websocket connection
     # this is how the worker will know the client peer exists
-    async with websockets.connect(f"ws://10.21.4.44:{port_number}") as websocket:
+    async with websockets.connect(f"ws://ec2-34-230-32-163.compute-1.amazonaws.com:{port_number}") as websocket:
         # 1a. register the worker with the server
         await websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
         logging.info(f"{peer_id} sent to signaling server for registration!")

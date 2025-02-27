@@ -1,4 +1,4 @@
-name: Build and Push sleap-webrtc (Test Workflow)
+name: Build and Push webRTC-connect (Test Workflow)
 
 # Run on push to branches other than main for sleap_vscode_tunnel
 on:
@@ -60,7 +60,6 @@ jobs:
           push: true # Push the image to Docker Hub
           # Tags all include "-test" to differentiate from production images
           tags: |
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-test
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-nvidia-cuda-11.3.1-cudnn8-runtime-ubuntu20.04-test
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-sleap-1.3.4-test
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}-test	
+            ghcr.io/${{ github.repository_owner }}/webRTC-connect:${{ steps.sanitize_platform.outputs.sanitized_platform }}-test
+            ghcr.io/${{ github.repository_owner }}/webRTC-connect:${{ steps.sanitize_platform.outputs.sanitized_platform }}-nvidia-cuda-11.3.1-cudnn8-runtime-ubuntu20.04-test
+            ghcr.io/${{ github.repository_owner }}/webRTC-connect:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}-test	

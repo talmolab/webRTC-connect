@@ -1,4 +1,4 @@
-name: Build and Push sleap-webrtc (Production Workflow)
+name: Build and Push webRTC-connect (Production Workflow)
 
 # Run on push to main branch after testing is complete
 on:
@@ -59,8 +59,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true # Push the image to GitHub Container Registry
           tags: |
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:latest
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-nvidia-cuda-11.3.1-cudnn8-runtime-ubuntu20.04
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-sleap-1.3.4
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}
+            ghcr.io/${{ github.repository_owner }}/webRTC-connect:latest
+            ghcr.io/${{ github.repository_owner }}/webRTC-connect:${{ steps.sanitize_platform.outputs.sanitized_platform }}
+            ghcr.io/${{ github.repository_owner }}/webRTC-connect:${{ steps.sanitize_platform.outputs.sanitized_platform }}-nvidia-cuda-11.3.1-cudnn8-runtime-ubuntu20.04
+            ghcr.io/${{ github.repository_owner }}/webRTC-connect:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}

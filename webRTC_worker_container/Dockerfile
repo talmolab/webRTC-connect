@@ -3,7 +3,8 @@
 # FROM eberrigan/sleap-cuda:latest
 
 # Use a lightweight multi-architecture base image 
-FROM python:slim
+# Link: https://hub.docker.com/layers/library/python/3.9-slim/images/sha256-b9a9207a1a1ead2133dc9d5f69edc4f3df76d63539f4599b019018373460fd72
+FROM python:3.9-slim
 
 # Install dependencies
 # opencv requires opengl https://github.com/conda-forge/opencv-feedstock/issues/401

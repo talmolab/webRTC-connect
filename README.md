@@ -2,14 +2,16 @@
 
 
 ## Description
-This repo contains a DockerFile for a lightweight container (~6 GB) with the PyPI installation of SLEAP and all of its dependencies. The container repository is located at [https://hub.docker.com/repository/docker/eberrigan/sleap-cuda/general](https://hub.docker.com/repository/docker/eberrigan/sleap-cuda/general).
+This repo contains two DockerFiles for lightweight containers (~8 GB) corresponding to the Worker and Signaling Server. The container repository is located at [https://hub.docker.com/repository/docker/eberrigan/sleap-cuda/general](https://hub.docker.com/repository/docker/eberrigan/sleap-cuda/general).
 
-The base image used is [nvidia/cuda:11.3.1-cudnn8-runtime-ubuntu20.04](https://hub.docker.com/layers/nvidia/cuda/11.3.1-cudnn8-runtime-ubuntu20.04/images/sha256-025a321d3131b688f4ac09d80e9af6221f2d1568b4f9ea6e45a698beebb439c0).
-- The Dockerfile is located at `./sleap_webRTC/webRTC_worker_container/Dockerfile`.
+The base image used is [python-3.9-slim](https://hub.docker.com/layers/library/python/3.9/images/sha256-8806b78efc2b334c3f6231ae21c43b029c1ae6ab56bdb6a4b95e58bbce85899a).
+- The Worker Dockerfile is located at `./webRTC_worker_container/Dockerfile`.
+- The Signaling Server Dockerfile is located at `./webRTC_external/Dockerfile`.
 - The repo has CI set up in `.github/workflows` for building and pushing the image when making changes.
-  - The workflow uses the linux/amd64 platform to build. 
+  - The workflow uses the linux/amd64 & linux/arm64 platform to build. 
 - `.devcontainer/devcontainer.json` is convenient for developing inside a container made with the DockerFile using Visual Studio Code.
-- Test data for training is located in `tests/sleap_webRTC`.
+
+Currently, the Signaling Server is run on a single AWS EC2 node inside a container such that both the Worker (inside its own separate container) and the Client (outside both containers) can register with this Signaling Server and discover each other to initate simple text messaging.  
 
 
 ## Installation
@@ -73,7 +75,7 @@ Test:
 
 ## Contributing
 
-- Use the `devcontainer.json` to open the repo in a dev container using VS Code.
+- Use the `devcontainer.json` to open the repo in a dev container using VS Code for the Worker and Signaling Server separately.
   - There is some test data in the `tests` directory that will be automatically mounted for use since the working directory is the workspace.
   - Rebuild the container when you make changes using `Dev Container: Rebuild Container`.
 

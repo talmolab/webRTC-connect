@@ -1,4 +1,4 @@
-name: Build and Push sleap-webrtc (Production Workflow)
+name: Build and Push webrtc-server (Production Workflow)
 
 # Run on push to main branch after testing is complete
 on:
@@ -6,8 +6,8 @@ on:
     branches:
       - main
     paths:
-      - sleap_webRTC/** # Only run on changes to sleap_webRTC
-      - .github/workflows/sleap_webrtc_production.yml # Only run on changes to this workflow
+      - webRTC_external/** # Only run on changes to the webRTC_external directory
+      - .github/workflows/webrtc_server_production.yml  # Only run on changes to this workflow
 
 
 jobs:
@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest # Only build on Ubuntu for now since Docker is not available on macOS runners
     strategy:
       matrix:
-        platform: [linux/amd64] # Only build amd64 for now
+        platform: [linux/amd64, linux/arm64] # Build for both amd64 and arm64
       max-parallel: 2  # Build both architectures in parallel (if more than one)
     outputs:
       git_sha: ${{ steps.get_sha.outputs.sha }}
@@ -54,12 +54,11 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          context: ./sleap_webRTC/webRTC_worker_container # Build context wrt the root of the repository
-          file: ./sleap_webRTC/webRTC_worker_container/Dockerfile # Path to Dockerfile wrt the root of the repository
+          context: ./webRTC_external # Build context wrt the root of the repository
+          file: ./webRTC_external/Dockerfile # Path to Dockerfile wrt the root of the repository
           platforms: ${{ matrix.platform }}
           push: true # Push the image to GitHub Container Registry
           tags: |
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:latest
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-nvidia-cuda-11.3.1-cudnn8-runtime-ubuntu20.04
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}
+            ghcr.io/${{ github.repository_owner }}/webrtc-server:${{ steps.sanitize_platform.outputs.sanitized_platform }}
+            ghcr.io/${{ github.repository_owner }}/webrtc-server:${{ steps.sanitize_platform.outputs.sanitized_platform }}-python-3.9-slim
+            ghcr.io/${{ github.repository_owner }}/webrtc-server:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}

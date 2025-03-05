@@ -1,20 +1,19 @@
-name: Build and Push sleap-webrtc (Test Workflow)
+name: Build and Push webrtc-worker (Test Workflow)
 
-# Run on push to branches other than main for sleap_vscode_tunnel
 on:
   push:
     branches-ignore:
       - main
     paths:
-      - sleap_webRTC/** # Only run on changes to sleap_webRTC
-      - .github/workflows/sleap_webrtc_test.yml # Only run on changes to this workflow
+      - webRTC_worker_container/** 
+      - .github/workflows/webrtc_worker_test.yml 
 
 jobs:
   build:
     runs-on: ubuntu-latest # Only build on Ubuntu for now since Docker is not available on macOS runners
     strategy:
       matrix:
-        platform: [linux/amd64] # Only build amd64 for now
+        platform: [linux/amd64, linux/arm64] # Build for both amd64 and arm64
       max-parallel: 2  # Build both architectures in parallel (if more than one)
     outputs:
       git_sha: ${{ steps.get_sha.outputs.sha }}
@@ -54,13 +53,12 @@ jobs:
         # https://github.com/docker/build-push-action
         uses: docker/build-push-action@v6
         with:
-          context: ./sleap_webRTC/webRTC_worker_container # Build context wrt the root of the repository
-          file: ./sleap_webRTC/webRTC_worker_container/Dockerfile # Path to Dockerfile wrt the root of the repository
+          context: ./webRTC_worker_container # Build context wrt the root of the repository
+          file: ./webRTC_worker_container/Dockerfile # Path to Dockerfile wrt the root of the repository
           platforms: ${{ matrix.platform }}
           push: true # Push the image to Docker Hub
           # Tags all include "-test" to differentiate from production images
           tags: |
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-test
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-nvidia-cuda-11.3.1-cudnn8-runtime-ubuntu20.04-test
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-sleap-1.3.4-test
-            ghcr.io/${{ github.repository_owner }}/sleap-webrtc:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}-test	
+            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-test
+            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-python-3.9-slim-test
+            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}-test	

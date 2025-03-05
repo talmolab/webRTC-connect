@@ -69,7 +69,7 @@ async def handle_connection(pc: RTCPeerConnection, websocket):
         logging.DEBUG(f"Error handling message: {e}")
 
 
-async def run_client(pc, peer_id: str, port_number: str):
+async def run_client(pc, peer_id: str, DNS: str, port_number: str):
     """Sends initial SDP offer to worker peer and establishes both connection & datachannel to be used by both parties.
 	
 		Initializes websocket to select worker peer and sends datachannel object to worker.
@@ -153,7 +153,7 @@ async def run_client(pc, peer_id: str, port_number: str):
 
     # 1. client registers with the signaling server (temp: localhost:8080) via websocket connection
     # this is how the client will know the worker peer exists
-    async with websockets.connect(f"ws://10.21.4.44:{port_number}") as websocket:
+    async with websockets.connect(f"{DNS}:{port_number}") as websocket:
         # 1a. register the client with the signaling server
         await websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
         logging.info(f"{peer_id} sent to signaling server for registration!")
@@ -186,9 +186,11 @@ async def run_client(pc, peer_id: str, port_number: str):
 
 if __name__ == "__main__":
     pc = RTCPeerConnection()
-    port_number = sys.argv[1] if len(sys.argv) > 1 else 8080
+    DNS = sys.argv[1] if len(sys.argv) > 1 else "ws://ec2-34-230-32-163.compute-1.amazonaws.com"
+    port_number = sys.argv[2] if len(sys.argv) > 1 else 8080
+
     try: 
-        asyncio.run(run_client(pc, "client1", port_number))
+        asyncio.run(run_client(pc, "client1", DNS, port_number))
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt: Exiting...")
     finally:

@@ -1,0 +1,64 @@
+name: Build and Push webrtc-worker (Production Workflow)
+
+# Run on push to main branch after testing is complete
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - webRTC_worker_container/** # Only run on changes to the webRTC_worker_container directory
+      - .github/workflows/webrtc_worker_production.yml # Only run on changes to this workflow
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest # Only build on Ubuntu for now since Docker is not available on macOS runners
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64] # Build for both amd64 and arm64
+      max-parallel: 2  # Build both architectures in parallel (if more than one)
+    outputs:
+      git_sha: ${{ steps.get_sha.outputs.sha }}
+      sanitized_platform: ${{ steps.sanitize_platform.outputs.sanitized_platform }}
+    steps:
+      - name: Checkout code
+        # https://github.com/actions/checkout
+        uses: actions/checkout@v4
+
+      - name: Get Git SHA
+        id: get_sha
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Debug Git SHA
+        run: echo "Git SHA ${{ steps.get_sha.outputs.sha }}"
+
+      # Generate a sanitized platform string with slashes replaced by dashes
+      - name: Sanitize platform name
+        id: sanitize_platform
+        run: |
+          sanitized_platform="${{ matrix.platform }}" # Copy platform value
+          sanitized_platform="${sanitized_platform/\//-}" # Replace / with -
+          echo "sanitized_platform=$sanitized_platform" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        # https://github.com/docker/setup-buildx-action
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container # Use a container driver for Buildx (default)
+          
+      # Authenticate to GitHub Container Registry
+      - name: Authenticate to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # Build and push the Docker image to GitHub Container Registry
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./webRTC_worker_container # Build context wrt the root of the repository
+          file: ./webRTC_worker_container/Dockerfile # Path to Dockerfile wrt the root of the repository
+          platforms: ${{ matrix.platform }}
+          push: true # Push the image to GitHub Container Registry
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}
+            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-python-3.9-slim
+            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}

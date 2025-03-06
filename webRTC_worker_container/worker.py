@@ -79,7 +79,7 @@ async def handle_connection(pc, websocket):
         logging.DEBUG(f"Error handling message: {e}")
 
         
-async def run_worker(pc, peer_id, port_number):
+async def run_worker(pc, peer_id: str, DNS: str, port_number):
     # websockets are only necessary here for setting up exchange of SDP & ICE candidates to each other
     
     # 2. listen for incoming data channel messages on channel established by the client
@@ -132,7 +132,7 @@ async def run_worker(pc, peer_id, port_number):
 
     # 1. worker registers with the signaling server (temp: localhost:8080) via websocket connection
     # this is how the worker will know the client peer exists
-    async with websockets.connect(f"ws://ec2-34-230-32-163.compute-1.amazonaws.com:{port_number}") as websocket:
+    async with websockets.connect(f"{DNS}:{port_number}") as websocket:
         # 1a. register the worker with the server
         await websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
         logging.info(f"{peer_id} sent to signaling server for registration!")
@@ -162,9 +162,10 @@ async def run_worker(pc, peer_id, port_number):
         
 if __name__ == "__main__":
     pc = RTCPeerConnection()
-    port_number = sys.argv[1] if len(sys.argv) > 1 else 8080
+    DNS = sys.argv[1] if len(sys.argv) > 1 else "ws://ec2-34-230-32-163.compute-1.amazonaws.com"
+    port_number = sys.argv[2] if len(sys.argv) > 1 else 8080
     try:
-        asyncio.run(run_worker(pc, "worker1", port_number))
+        asyncio.run(run_worker(pc, "worker1", DNS, port_number))
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt: Exiting...")
     finally:

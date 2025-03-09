@@ -8,12 +8,11 @@
 	},
 	"forwardPorts": [
     8080,
-    5000,
-    3478,
     3478
   ],
     "runArgs": [
-      // "--gpus=all",
+      "-p", "8080:8080",
+      "-p", "3478:3478"
     ],
 	"customizations": {
 		"vscode": {

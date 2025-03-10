@@ -3,6 +3,7 @@ import sys
 import websockets
 import json
 import logging
+import os
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 from websockets import WebSocketClientProtocol
@@ -100,19 +101,44 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
 			None
         
         """
-        message = input("Enter message to send (or type 'quit' to exit): ")
+        message = input("Enter message to send (type 'file' to prompt file or type 'quit' to exit): ")
+        data = None
 
         if message.lower() == "quit": # client is initiator, send quit request to worker
             logging.info("Quitting...")
             await pc.close()
             return 
+        
+        if message.lower() == "file":
+            logging.info("Prompting file...")
+            file_path = input("Enter file path: (or type 'quit' to exit): ")
+            if not file_path:
+                logging.info("No file path entered.")
+                return
+            if file_path.lower() == "quit":
+                logging.info("Quitting...")
+                await pc.close()
+                return
+            if not os.path.exists(file_path):
+                logging.info("File does not exist.")
+                return
+            else: 
+                with open(file_path, "r") as file:
+                    logging.info(f"File opened: {file_path}")
+                    data = file.read()
 
         if channel.readyState != "open":
             logging.info(f"Data channel not open. Ready state is: {channel.readyState}")
             return 
+
+        if not data: # no file
+          channel.send(message)
+          logging.info(f"Message sent to worker.")
         
-        channel.send(message)
-        logging.info(f"Message sent to worker.")
+        else: # file present
+          channel.send(data)
+          channel.send("END_OF_FILE")
+          logging.info(f"File sent to worker.")
 
 
     @channel.on("open")

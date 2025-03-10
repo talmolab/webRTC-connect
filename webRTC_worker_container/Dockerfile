@@ -25,6 +25,9 @@ COPY worker.py /app/worker.py
 # Ensure executable
 RUN chmod +x /app/worker.py
 
+# Create shared file directory inside container 
+RUN mkdir -p /app/shared_data && chmod 777 /app/shared_data
+
 # Port exposed by the container, NOT computer (localhost), 8080 = websocket server, 3478 = TURN server
 EXPOSE 8080 5000 3478/udp 3478/tcp
 

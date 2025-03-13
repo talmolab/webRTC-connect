@@ -11,6 +11,9 @@ from websockets import WebSocketClientProtocol
 # setup logging
 logging.basicConfig(level=logging.INFO)
 
+# global variables
+CHUNK_SIZE = 32 * 1024
+
 async def clean_exit(pc, websocket):
     logging.info("Closing WebRTC connection...")
     await pc.close()
@@ -92,7 +95,7 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
     async def send_client_messages():
         """Handles typed messages from client to be sent to worker peer.
         
-		Takes input from client and sends it to worker peer via datachannel.
+		  Takes input from client and sends it to worker peer via datachannel. Additionally, prompts for file upload to be sent to worker.
 	
         Args:
 			None
@@ -109,6 +112,10 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
             await pc.close()
             return 
         
+        if channel.readyState != "open":
+            logging.info(f"Data channel not open. Ready state is: {channel.readyState}")
+            return 
+        
         if message.lower() == "file":
             logging.info("Prompting file...")
             file_path = input("Enter file path: (or type 'quit' to exit): ")
@@ -123,25 +130,41 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
                 logging.info("File does not exist.")
                 return
             else: 
+                logging.info(f"Sending {file_path} to worker...")
+                file_name = os.path.basename(file_path)
+                file_size = os.path.getsize(file_path)
+                
+                # Send metadata first
+                channel.send(f"{file_name}:{file_size}")  
+
+                # Send file in chunks (32 KB)
                 with open(file_path, "rb") as file:
                     logging.info(f"File opened: {file_path}")
-                    data = file.read()
+                    while chunk := file.read(CHUNK_SIZE):
+                        channel.send(chunk)
 
-        if channel.readyState != "open":
-            logging.info(f"Data channel not open. Ready state is: {channel.readyState}")
-            return 
+                channel.send("END_OF_FILE")
+                logging.info(f"File sent to worker.")
+                    
+                # Flag data to True to prevent reg msg from being sent
+                data = True
 
         if not data: # no file
           channel.send(message)
           logging.info(f"Message sent to worker.")
         
-        else: # file present
-          logging.info(f"Sending {file_path} to worker...")
-          file_name = os.path.basename(file_path)
-          channel.send(file_name)
-          channel.send(data)
-          channel.send("END_OF_FILE")
-          logging.info(f"File sent to worker.")
+        # else: # file present
+        #   logging.info(f"Sending {file_path} to worker...")
+        #   file_name = os.path.basename(file_path)
+        #   file_size = os.path.getsize(file_path)
+
+        #   # Send metadata first
+        #   channel.send(f"{file_name}:{file_size}")  
+
+        #   # Send file in chunks
+        #   channel.send(data)
+        #   channel.send("END_OF_FILE")
+        #   logging.info(f"File sent to worker.")
 
 
     @channel.on("open")

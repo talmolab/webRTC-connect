@@ -11,8 +11,9 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 # setup logging
 logging.basicConfig(level=logging.INFO)
 
+# directory to save files received from client
 SAVE_DIR = "/app/shared_data"
-
+received_files = {}
 
 async def clean_exit(pc, websocket):
     logging.info("Closing WebRTC connection...")
@@ -118,18 +119,38 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         async def on_message(message):
             # receive client message
             logging.info(f"Worker received: {message}")
-            nonlocal file_name, file_data
+
+            # global received_files dictionary
+            global received_files
             
             if isinstance(message, str):
-                file_name = message
-                logging.info(f"File name received: {file_name}")
+                if message == "END_OF_FILE":
+                    # File transfer complete, save to disk
+                    file_name, file_data = list(received_files.items())[0]
+                    file_path = os.path.join(SAVE_DIR, file_name)
+
+                    with open(file_path, "wb") as file:
+                        file.write(file_data)
+                    print(f"File saved as: {file_path}")
+
+                    received_files.clear()  # Reset for next file
+                else:
+                    # Metadata received (file name & size)
+                    file_name, file_size = message.split(":")
+                    received_files.get(file_name) = bytearray()
+                    logging.info(f"File name received: {file_name}, of size {file_size}")
+
+                # file_name = message
+                # logging.info(f"File name received: {file_name}")
 
             elif isinstance(message, bytes):
-                file_data.extend(message)
+                # file_data.extend(message)
 
-                with open(f"{SAVE_DIR}/{file_name}", "wb") as f:
-                    f.write(file_data)
-                    logging.info(f"File {file_name} saved to {SAVE_DIR}")
+                # with open(f"{SAVE_DIR}/{file_name}", "wb") as f:
+                #     f.write(file_data)
+                #     logging.info(f"File {file_name} saved to {SAVE_DIR}")
+                file_name = list(received_files.keys())[0]
+                received_files.get(file_name).extend(message)
 			
                 
             # send message to client

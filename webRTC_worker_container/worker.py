@@ -137,7 +137,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                 else:
                     # Metadata received (file name & size)
                     file_name, file_size = message.split(":")
-                    received_files.get(file_name) = bytearray()
+                    received_files[file_name] = bytearray()
                     logging.info(f"File name received: {file_name}, of size {file_size}")
 
                 # file_name = message

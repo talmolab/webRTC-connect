@@ -137,7 +137,8 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
         
         else: # file present
           logging.info(f"Sending {file_path} to worker...")
-          channel.send(os.path.basename)
+          file_name = os.path.basename(file_path)
+          channel.send(file_name)
           channel.send(data)
           channel.send("END_OF_FILE")
           logging.info(f"File sent to worker.")

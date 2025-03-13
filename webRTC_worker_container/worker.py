@@ -130,11 +130,6 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                 with open(f"{SAVE_DIR}/{file_name}", "wb") as f:
                     f.write(file_data)
                     logging.info(f"File {file_name} saved to {SAVE_DIR}")
-                
-                
-
-
-
 			
                 
             # send message to client

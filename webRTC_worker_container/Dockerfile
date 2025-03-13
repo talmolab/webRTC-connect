@@ -21,7 +21,7 @@ FROM python:3.9-slim
 # Install required dependencies (jq, nano, tree, etc.)
 RUN apt update && apt install -y \
     jq \
-    && rm -rf /var/lib/apt/lists/*  # Clean up to reduce image size
+    && rm -rf /var/lib/apt/lists/* 
 
 # Install aiortc, asyncio, and websockets
 RUN pip install aiortc asyncio websockets

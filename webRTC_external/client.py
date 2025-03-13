@@ -123,7 +123,7 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
                 logging.info("File does not exist.")
                 return
             else: 
-                with open(file_path, "r") as file:
+                with open(file_path, "rb") as file:
                     logging.info(f"File opened: {file_path}")
                     data = file.read()
 
@@ -136,6 +136,8 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
           logging.info(f"Message sent to worker.")
         
         else: # file present
+          logging.info(f"Sending {file_path} to worker...")
+          channel.send(os.path.basename)
           channel.send(data)
           channel.send("END_OF_FILE")
           logging.info(f"File sent to worker.")

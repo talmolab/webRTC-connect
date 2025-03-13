@@ -4,11 +4,14 @@ import sys
 import websockets
 import json
 import logging
+import os
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 
 # setup logging
 logging.basicConfig(level=logging.INFO)
+
+SAVE_DIR = "/app/shared_data"
 
 
 async def clean_exit(pc, websocket):
@@ -87,6 +90,9 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
     def on_datachannel(channel):
         # listen for incoming messages on the channel
         logging.info("channel(%s) %s" % (channel.label, "created by remote party & received."))
+        file_data = bytearray()
+        file_name = "default_receieved_file.bin"
+        
 
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
@@ -112,22 +118,27 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         async def on_message(message):
             # receive client message
             logging.info(f"Worker received: {message}")
-
-            if message.lower() == "sleap-label": # TEST RECEIVING COMMMAND AND EXECUTING INSIDE DOCKER CONTAINER
-                logging.info(f"Running {message} command...")
-                try:
-                    result = subprocess.run(
-                        message, 
-                        capture_output=True,
-                        text=True,
-                        check=True,                        
-                    )
-                    logging.info(result.stdout) # simple print for now
-                except:
-                    logging.DEBUG("Error running SLEAP label command.")
+            nonlocal file_name, file_data
             
+            if isinstance(message, str):
+                file_name = message
+                logging.info(f"File name received: {file_name}")
+
+            elif isinstance(message, bytes):
+                file_data.extend(message)
+
+                with open(f"{SAVE_DIR}/{file_name}", "wb") as f:
+                    f.write(file_data)
+                    logging.info(f"File {file_name} saved to {SAVE_DIR}")
+                
+                
+
+
+
+			
+                
             # send message to client
-            await send_worker_messages(channel, pc, websocket)
+            # await send_worker_messages(channel, pc, websocket)
 
 
     # 1. worker registers with the signaling server (temp: localhost:8080) via websocket connection

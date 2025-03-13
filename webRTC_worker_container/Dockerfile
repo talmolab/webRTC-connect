@@ -17,6 +17,13 @@ FROM python:3.9-slim
   
 # Install websocket dependencies onto image @ build time (asyncio is included in python3.8)
 # put into requirement.txt later
+
+# Install required dependencies (jq, nano, tree, etc.)
+RUN apt update && apt install -y \
+    jq \
+    && rm -rf /var/lib/apt/lists/*  # Clean up to reduce image size
+
+# Install aiortc, asyncio, and websockets
 RUN pip install aiortc asyncio websockets
 
 # Copy the sleap_webRTC directory into the image's root dir

@@ -11,12 +11,15 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 # setup logging
 logging.basicConfig(level=logging.INFO)
 
+# global variables
+CHUNK_SIZE = 32 * 1024
+
 # directory to save files received from client
 SAVE_DIR = "/app/shared_data"
 received_files = {}
 
 async def clean_exit(pc, websocket):
-    logging.info("Closing WebRTC connection...")
+    logging.info("Closing WebRTC connection...") 
     await pc.close()
 
     logging.info("Closing websocket connection...")
@@ -26,9 +29,21 @@ async def clean_exit(pc, websocket):
 
 
 async def send_worker_messages(channel, pc, websocket):
+    """Handles typed messages from worker to be sent to client peer.
+        
+		  Takes input from worker and sends it to client peer via datachannel. Additionally, prompts for file upload to be sent to client.
+	
+        Args:
+			None
+        
+		Returns:
+			None
+        
+        """
 
-    message = input("Enter message to send (or type 'quit' to exit): ")
-
+    message = input("Enter message to send (type 'file' to prompt file or type 'quit' to exit): ")
+    data = None
+    
     if message.lower() == "quit":
         logging.info("Quitting...")
         await pc.close()
@@ -37,9 +52,43 @@ async def send_worker_messages(channel, pc, websocket):
     if channel.readyState != "open":
         logging.info(f"Data channel not open. Ready state is: {channel.readyState}")
         return
-   
-    channel.send(message)
-    logging.info(f"Message sent to client.")
+
+    if message.lower() == "file":
+        logging.info("Prompting file...")
+        file_path = input("Enter file path: (or type 'quit' to exit): ")
+        if not file_path:
+            logging.info("No file path entered.")
+            return
+        if file_path.lower() == "quit":
+            logging.info("Quitting...")
+            await pc.close()
+            return
+        if not os.path.exists(file_path):
+            logging.info("File does not exist.")
+            return
+        else:
+            logging.info(f"Sending {file_path} to client...")
+            file_name = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
+            
+            # Send metadata first
+            channel.send(f"{file_name}:{file_size}")
+            
+            # Send file in chunks (32 KB)
+            with open(file_path, "rb") as file:
+                logging.info(f"File opened: {file_path}")
+                while chunk := file.read(CHUNK_SIZE):
+                    channel.send(chunk)
+            
+            channel.send("END_OF_FILE")
+            logging.info(f"File sent to client.")
+                    
+            # Flag data to True to prevent reg msg from being sent
+            data = True
+
+    if not data:
+        channel.send(message)
+        logging.info(f"Message sent to client.")
 
 
 async def handle_connection(pc, websocket):
@@ -131,9 +180,10 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                     with open(file_path, "wb") as file:
                         file.write(file_data)
-                    print(f"File saved as: {file_path}")
+                    logging.info(f"File saved as: {file_path}")
 
                     received_files.clear()  # Reset for next file
+                    await send_worker_messages(channel, pc, websocket)
                 else:
                     # Metadata received (file name & size)
                     file_name, file_size = message.split(":")

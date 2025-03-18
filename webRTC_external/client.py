@@ -14,6 +14,10 @@ logging.basicConfig(level=logging.INFO)
 # global variables
 CHUNK_SIZE = 32 * 1024
 
+# directory to save files received from client
+SAVE_DIR = "/app/shared_data"
+received_files = {}
+
 async def clean_exit(pc, websocket):
     logging.info("Closing WebRTC connection...")
     await pc.close()
@@ -184,7 +188,33 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
     @channel.on("message")
     async def on_message(message):
         logging.info(f"Client received: {message}")
-        await send_client_messages()
+        
+		# global received_files dictionary
+        global received_files
+        
+        if isinstance(message, str):
+            if message == "END_OF_FILE":
+                # File transfer complete, save to disk
+                file_name, file_data = list(received_files.items())[0]
+                file_path = os.path.join(SAVE_DIR, file_name)
+                
+                with open(file_path, "wb") as file:
+                    file.write(file_data)
+                logging.info(f"File saved as: {file_path}")
+                
+                received_files.clear()
+                await send_client_messages()
+            else:
+                # Metadata received (file name & size)
+                file_name, file_size = message.split(":")
+                received_files[file_name] = bytearray()
+                logging.info(f"File name received: {file_name}, of size {file_size}")
+                
+        elif isinstance(message, bytes):
+            file_name = list(received_files.keys())[0]
+            received_files.get(file_name).extend(message)
+                
+        # await send_client_messages()
 
 
     @pc.on("iceconnectionstatechange")

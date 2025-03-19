@@ -54,11 +54,11 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./webRTC_worker_container # Build context wrt the root of the repository
-          file: ./webRTC_worker_container/Dockerfile1 # Path to Dockerfile wrt the root of the repository
+          file: ./webRTC_worker_container/Dockerfile # Path to Dockerfile wrt the root of the repository
           platforms: ${{ matrix.platform }}
           push: true # Push the image to Docker Hub
           # Tags all include "-test" to differentiate from production images
           tags: |
-            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-mvp-test
-            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-sleap-cuda-test
-            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}-mvp-test	
+            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-test
+            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-python-3.9-slim-test
+            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}-test	

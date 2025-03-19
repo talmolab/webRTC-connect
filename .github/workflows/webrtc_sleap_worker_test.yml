@@ -59,6 +59,6 @@ jobs:
           push: true # Push the image to Docker Hub
           # Tags all include "-test" to differentiate from production images
           tags: |
-            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-test
-            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-sleap-cuda-test
-            ghcr.io/${{ github.repository_owner }}/webrtc-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}-test	
+            ghcr.io/${{ github.repository_owner }}/webrtc-sleap-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-test
+            ghcr.io/${{ github.repository_owner }}/webrtc-sleap-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-sleap-cuda-test
+            ghcr.io/${{ github.repository_owner }}/webrtc-sleap-worker:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}-test	

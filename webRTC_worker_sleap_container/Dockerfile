@@ -41,7 +41,7 @@ EXPOSE 8080 5000 3478/udp 3478/tcp
 # Signaling server -> worker -> client in sequenece
 # Worker makes req to signaling server, signaling server sends offer to client and accepts offer
 # Connection is established between client and worker
-ENTRYPOINT ["sh", "-c", "python3 /app/worker.py"]
+# ENTRYPOINT ["sh", "-c", "python3 /app/worker.py"]
 
 
 

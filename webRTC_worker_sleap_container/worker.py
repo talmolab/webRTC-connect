@@ -198,6 +198,9 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                 # logging.info(f"File name received: {file_name}")
 
             elif isinstance(message, bytes):
+                if message == b"KEEP_ALIVE":
+                    logging.info("Keep alive message received.")
+                    return
                 # file_data.extend(message)
 
                 # with open(f"{SAVE_DIR}/{file_name}", "wb") as f:

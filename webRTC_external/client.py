@@ -96,6 +96,13 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
     channel = pc.createDataChannel("my-data-channel")
     logging.info("channel(%s) %s" % (channel.label, "created by local party."))
 
+    async def keep_ice_alive(channel):
+        while True:
+            await asyncio.sleep(15)
+            if channel.readyState == "open":
+                channel.send(b"KEEP_ALIVE")
+
+
     async def send_client_messages():
         """Handles typed messages from client to be sent to worker peer.
         
@@ -184,6 +191,7 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
 			None
         """
 
+        asyncio.create_task(keep_ice_alive(channel))
         logging.info(f"{channel.label} is open")
         await send_client_messages()
     

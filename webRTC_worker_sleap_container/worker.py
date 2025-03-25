@@ -173,6 +173,10 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             global received_files
             
             if isinstance(message, str):
+                if message == b"KEEP_ALIVE":
+                    logging.info("Keep alive message received.")
+                    return
+
                 if message == "END_OF_FILE":
                     # File transfer complete, save to disk
                     file_name, file_data = list(received_files.items())[0]

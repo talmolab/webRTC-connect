@@ -12,7 +12,7 @@ from websockets import WebSocketClientProtocol
 logging.basicConfig(level=logging.INFO)
 
 # global variables
-CHUNK_SIZE = 256 * 1024
+CHUNK_SIZE = 64 * 1024
 
 # directory to save files received from client
 SAVE_DIR = "/app/shared_data"
@@ -145,6 +145,9 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
                 with open(file_path, "rb") as file:
                     logging.info(f"File opened: {file_path}")
                     while chunk := file.read(CHUNK_SIZE):
+                        while channel.bufferedAmount > 16 * 1024 * 1024: # Wait if buffer >16MB 
+                            await asyncio.sleep(0.1)
+
                         channel.send(chunk)
 
                 channel.send("END_OF_FILE")

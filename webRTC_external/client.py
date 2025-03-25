@@ -12,7 +12,7 @@ from websockets import WebSocketClientProtocol
 logging.basicConfig(level=logging.INFO)
 
 # global variables
-CHUNK_SIZE = 32 * 1024
+CHUNK_SIZE = 256 * 1024
 
 # directory to save files received from client
 SAVE_DIR = "/app/shared_data"

@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 CHUNK_SIZE = 64 * 1024
 
 # directory to save files received from client
-SAVE_DIR = "/results"
+SAVE_DIR = "results"
 received_files = {}
 
 async def clean_exit(pc, websocket):

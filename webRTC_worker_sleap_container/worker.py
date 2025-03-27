@@ -122,14 +122,14 @@ async def handle_connection(pc, websocket):
 
             # 3. error handling
             else:
-                logging.DEBUG(f"Unhandled message: {data}")
+                logging.ERROR(f"Unhandled message: {data}")
                 
     
     except json.JSONDecodeError:
-        logging.DEBUG("Invalid JSON received")
+        logging.ERROR("Invalid JSON received")
 
     except Exception as e:
-        logging.DEBUG(f"Error handling message: {e}")
+        logging.ERROR(f"Error handling message: {e}")
 
         
 async def run_worker(pc, peer_id: str, DNS: str, port_number):
@@ -148,7 +148,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         async def on_iceconnectionstatechange():
             logging.info(f"ICE connection state is now {pc.iceConnectionState}")
             if pc.iceConnectionState == "failed":
-                logging.DEBUG('ICE connection failed')
+                logging.ERROR('ICE connection failed')
                 await clean_exit(pc, websocket)
                 return
             elif pc.iceConnectionState in ["failed", "disconnected"]:
@@ -231,7 +231,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
     async def on_iceconnectionstatechange():
         logging.info(f"ICE connection state is now {pc.iceConnectionState}")
         if pc.iceConnectionState == "failed":
-            logging.DEBUG('ICE connection failed')
+            logging.ERROR('ICE connection failed')
             await clean_exit(pc, websocket)
             return
         elif pc.iceConnectionState in ["failed", "disconnected"]:

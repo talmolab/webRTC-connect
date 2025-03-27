@@ -215,11 +215,14 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
                 
                 received_files.clear()
                 await send_client_messages()
-            else:
+            elif ":" in message:
                 # Metadata received (file name & size)
                 file_name, file_size = message.split(":")
                 received_files[file_name] = bytearray()
                 logging.info(f"File name received: {file_name}, of size {file_size}")
+            else:
+                logging.info(f"Worker sent: {message}")
+                await send_client_messages()
                 
         elif isinstance(message, bytes):
             file_name = list(received_files.keys())[0]

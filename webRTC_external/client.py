@@ -12,10 +12,10 @@ from websockets import WebSocketClientProtocol
 logging.basicConfig(level=logging.INFO)
 
 # global variables
-CHUNK_SIZE = 32 * 1024
+CHUNK_SIZE = 64 * 1024
 
 # directory to save files received from client
-SAVE_DIR = "/app/shared_data"
+SAVE_DIR = "results"
 received_files = {}
 
 async def clean_exit(pc, websocket):
@@ -96,6 +96,13 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
     channel = pc.createDataChannel("my-data-channel")
     logging.info("channel(%s) %s" % (channel.label, "created by local party."))
 
+    async def keep_ice_alive(channel):
+        while True:
+            await asyncio.sleep(15)
+            if channel.readyState == "open":
+                channel.send(b"KEEP_ALIVE")
+
+
     async def send_client_messages():
         """Handles typed messages from client to be sent to worker peer.
         
@@ -145,6 +152,9 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
                 with open(file_path, "rb") as file:
                     logging.info(f"File opened: {file_path}")
                     while chunk := file.read(CHUNK_SIZE):
+                        while channel.bufferedAmount > 16 * 1024 * 1024: # Wait if buffer >16MB 
+                            await asyncio.sleep(0.1)
+
                         channel.send(chunk)
 
                 channel.send("END_OF_FILE")
@@ -181,6 +191,7 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
 			None
         """
 
+        asyncio.create_task(keep_ice_alive(channel))
         logging.info(f"{channel.label} is open")
         await send_client_messages()
     
@@ -204,11 +215,14 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
                 
                 received_files.clear()
                 await send_client_messages()
-            else:
+            elif ":" in message:
                 # Metadata received (file name & size)
                 file_name, file_size = message.split(":")
                 received_files[file_name] = bytearray()
                 logging.info(f"File name received: {file_name}, of size {file_size}")
+            else:
+                logging.info(f"Worker sent: {message}")
+                await send_client_messages()
                 
         elif isinstance(message, bytes):
             file_name = list(received_files.keys())[0]

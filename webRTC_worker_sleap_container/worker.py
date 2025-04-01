@@ -19,6 +19,14 @@ SAVE_DIR = "/app/shared_data"
 received_files = {}
 
 async def clean_exit(pc, websocket):
+    """ Handles cleanup and shutdown of the worker.
+        Args:
+            pc: RTCPeerConnection object
+            websocket: WebSocket connection object
+        Returns:
+            None    
+    """
+
     logging.info("Closing WebRTC connection...") 
     await pc.close()
 
@@ -92,6 +100,13 @@ async def send_worker_messages(channel, pc, websocket):
 
 
 async def handle_connection(pc, websocket):
+    """ Handles incoming messages from the signaling server and processes them accordingly.
+        Args:
+            pc: RTCPeerConnection object
+            websocket: WebSocket connection object
+        Returns:
+            None    
+        """
     try:
         async for message in websocket:
             data = json.loads(message)
@@ -133,11 +148,28 @@ async def handle_connection(pc, websocket):
 
         
 async def run_worker(pc, peer_id: str, DNS: str, port_number):
+    """
+      Main function to run the worker.
+        Args:
+          pc: RTCPeerConnection object
+          peer_id: ID of the worker peer
+          DNS: DNS address of the signaling server
+          port_number: Port number of the signaling server
+        Returns:
+          None
+    """
     # websockets are only necessary here for setting up exchange of SDP & ICE candidates to each other
     
     # 2. listen for incoming data channel messages on channel established by the client
     @pc.on("datachannel")
     def on_datachannel(channel):
+        """ Handles incoming data channel messages from the client.
+            Args:
+                channel: DataChannel object
+            Returns:
+                None
+        """
+
         # listen for incoming messages on the channel
         logging.info("channel(%s) %s" % (channel.label, "created by remote party & received."))
         file_data = bytearray()
@@ -146,6 +178,14 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
+            """
+              Logs the ICE connection state and handles connection state changes.
+              Args:
+                None
+              Returns:
+                None
+            """
+
             logging.info(f"ICE connection state is now {pc.iceConnectionState}")
             if pc.iceConnectionState == "failed":
                 logging.ERROR('ICE connection failed')
@@ -162,10 +202,25 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             
         @channel.on("open")
         def on_channel_open():
+            """
+              Logs the channel open event.
+                Args:
+                  None
+                Returns:
+                  None
+            """
             logging.info(f'{channel.label} channel is open')
         
         @channel.on("message")
         async def on_message(message):
+            """
+              Handles incoming messages from the client.
+                Args:
+                  message: The message received from the client (can be string or bytes)
+                Returns:
+                  None
+            """
+
             # receive client message
             logging.info(f"Worker received: {message}")
 
@@ -186,7 +241,8 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                         file.write(file_data)
                     logging.info(f"File saved as: {file_path}")
 
-                    received_files.clear()  # Reset for next file
+                    # Reset for next file and reprompt worker
+                    received_files.clear()
                     await send_worker_messages(channel, pc, websocket)
                 else:
                     # Metadata received (file name & size)
@@ -194,28 +250,18 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                     received_files[file_name] = bytearray()
                     logging.info(f"File name received: {file_name}, of size {file_size}")
 
-                # file_name = message
-                # logging.info(f"File name received: {file_name}")
 
             elif isinstance(message, bytes):
                 if message == b"KEEP_ALIVE":
                     logging.info("Keep alive message received.")
                     return
-                # file_data.extend(message)
-
-                # with open(f"{SAVE_DIR}/{file_name}", "wb") as f:
-                #     f.write(file_data)
-                #     logging.info(f"File {file_name} saved to {SAVE_DIR}")
+                
                 file_name = list(received_files.keys())[0]
                 received_files.get(file_name).extend(message)
-			
-                
-            # send message to client
-            # await send_worker_messages(channel, pc, websocket)
 
 
     # 1. worker registers with the signaling server (temp: localhost:8080) via websocket connection
-    # this is how the worker will know the client peer exists
+    # This is how the worker will know the client peer exists
     async with websockets.connect(f"{DNS}:{port_number}") as websocket:
         # 1a. register the worker with the server
         await websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
@@ -229,6 +275,12 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
     # ICE, or Interactive Connectivity Establishment, is a protocol used in WebRTC to establish a connection
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
+        """ Handles ICE connection state changes.
+            Args:
+              None
+            Returns:
+              None
+        """
         logging.info(f"ICE connection state is now {pc.iceConnectionState}")
         if pc.iceConnectionState == "failed":
             logging.ERROR('ICE connection failed')

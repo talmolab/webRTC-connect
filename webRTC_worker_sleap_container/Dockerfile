@@ -23,6 +23,9 @@ RUN apt update && apt install -y \
     jq \
     && rm -rf /var/lib/apt/lists/* 
 
+# Install zip function
+RUN apt-get update && apt-get install -y zip unzip
+
 # Install aiortc, asyncio, and websockets
 RUN pip install aiortc asyncio websockets
 

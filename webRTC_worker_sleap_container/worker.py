@@ -4,6 +4,7 @@ import sys
 import websockets
 import json
 import logging
+import shutil
 import os
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
@@ -16,7 +17,20 @@ CHUNK_SIZE = 32 * 1024
 
 # directory to save files received from client
 SAVE_DIR = "/app/shared_data"
+ZIP_DIR = "shared_data/models/results.zip"
 received_files = {}
+
+async def zip_results():
+    """Zips the contents of the shared_data directory and saves it to a zip file."""
+    logging.info("Zipping results...")
+    if os.path.exists(ZIP_DIR):
+        
+      shutil.make_archive(ZIP_DIR.replace(".zip", ""), 'zip', SAVE_DIR)
+      logging.info(f"Results zipped to {ZIP_DIR}")
+    else:
+      logging.info("Results already zipped or directory does not exist!")
+      return
+    
 
 async def clean_exit(pc, websocket):
     """ Handles cleanup and shutdown of the worker.
@@ -243,6 +257,10 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                     # Reset for next file and reprompt worker
                     received_files.clear()
+                    logging.info("Zipping results...")
+                    await zip_results()
+                    logging.info(f"Zipping complete! Results zipped to {ZIP_DIR}")
+
                     await send_worker_messages(channel, pc, websocket)
                 else:
                     # Metadata received (file name & size)

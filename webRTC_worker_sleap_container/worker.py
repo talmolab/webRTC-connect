@@ -298,7 +298,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         
 if __name__ == "__main__":
     pc = RTCPeerConnection()
-    DNS = sys.argv[1] if len(sys.argv) > 1 else "ws://ec2-34-230-32-163.compute-1.amazonaws.com"
+    DNS = sys.argv[1] if len(sys.argv) > 1 else "ws://ec2-3-80-210-101.compute-1.amazonaws.com"
     port_number = sys.argv[2] if len(sys.argv) > 1 else 8080
     try:
         asyncio.run(run_worker(pc, "worker1", DNS, port_number))

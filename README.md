@@ -2,16 +2,17 @@
 
 
 ## Description
-This repo contains two DockerFiles for lightweight containers (~8 GB) corresponding to the Worker and Signaling Server. The container repository is located at [https://hub.docker.com/repository/docker/eberrigan/sleap-cuda/general](https://hub.docker.com/repository/docker/eberrigan/sleap-cuda/general).
+This repo contains three DockerFiles for lightweight containers (~8 GB) corresponding to the Worker, SLEAP Worker, and Signaling Server. The container repository is located at [https://hub.docker.com/repository/docker/eberrigan/sleap-cuda/general](https://hub.docker.com/repository/docker/eberrigan/sleap-cuda/general).
 
-The base image used is [python-3.9-slim](https://hub.docker.com/layers/library/python/3.9/images/sha256-8806b78efc2b334c3f6231ae21c43b029c1ae6ab56bdb6a4b95e58bbce85899a).
+The base image used is [python-3.9-slim](https://hub.docker.com/layers/library/python/3.9/images/sha256-8806b78efc2b334c3f6231ae21c43b029c1ae6ab56bdb6a4b95e58bbce85899a) for the Worker. For the SLEAP Worker, the base image is [ghcr.io/talmolab/sleap-cuda:linux-amd64-2a8cefd7d0291d2ce07998fa3c54c9d0d618d31b](ghcr.io/talmolab/sleap-cuda:linux-amd64-2a8cefd7d0291d2ce07998fa3c54c9d0d618d31b)
 - The Worker Dockerfile is located at `./webRTC_worker_container/Dockerfile`.
+- The SLEAP Worker Dockerfile is located at `./webRTC_worker_sleap_container/Dockerfile`
 - The Signaling Server Dockerfile is located at `./webRTC_external/Dockerfile`.
 - The repo has CI set up in `.github/workflows` for building and pushing the image when making changes.
   - The workflow uses the linux/amd64 & linux/arm64 platform to build. 
 - `.devcontainer/devcontainer.json` is convenient for developing inside a container made with the DockerFile using Visual Studio Code.
 
-Currently, the Signaling Server is run on a single AWS EC2 node inside a container such that both the Worker (inside its own separate container) and the Client (outside both containers) can register with this Signaling Server and discover each other to initate simple text messaging.  
+Currently, the Signaling Server is run on a single AWS EC2 node inside a container such that both the Worker/SLEAP Worker (inside its own separate container) and the Client (outside both containers) can register with this Signaling Server and discover each other to initate simple text messaging and file sharing. The SLEAP Worker for the webRTC MVP Demo is also capable of using the received files for training, as it is hosted on the Salk GPU cluster. 
 
 
 ## Installation

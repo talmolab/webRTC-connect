@@ -3,12 +3,20 @@ import sys
 import websockets
 import json
 import logging
+import os
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 from websockets import WebSocketClientProtocol
 
 # setup logging
 logging.basicConfig(level=logging.INFO)
+
+# global variables
+CHUNK_SIZE = 64 * 1024
+
+# directory to save files received from client
+SAVE_DIR = "results"
+received_files = {}
 
 async def clean_exit(pc, websocket):
     logging.info("Closing WebRTC connection...")
@@ -88,10 +96,17 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
     channel = pc.createDataChannel("my-data-channel")
     logging.info("channel(%s) %s" % (channel.label, "created by local party."))
 
+    async def keep_ice_alive(channel):
+        while True:
+            await asyncio.sleep(15)
+            if channel.readyState == "open":
+                channel.send(b"KEEP_ALIVE")
+
+
     async def send_client_messages():
         """Handles typed messages from client to be sent to worker peer.
         
-		Takes input from client and sends it to worker peer via datachannel.
+		  Takes input from client and sends it to worker peer via datachannel. Additionally, prompts for file upload to be sent to worker.
 	
         Args:
 			None
@@ -100,19 +115,70 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
 			None
         
         """
-        message = input("Enter message to send (or type 'quit' to exit): ")
+        message = input("Enter message to send (type 'file' to prompt file or type 'quit' to exit): ")
+        data = None
 
         if message.lower() == "quit": # client is initiator, send quit request to worker
             logging.info("Quitting...")
             await pc.close()
             return 
-
+        
         if channel.readyState != "open":
             logging.info(f"Data channel not open. Ready state is: {channel.readyState}")
             return 
         
-        channel.send(message)
-        logging.info(f"Message sent to worker.")
+        if message.lower() == "file":
+            logging.info("Prompting file...")
+            file_path = input("Enter file path: (or type 'quit' to exit): ")
+            if not file_path:
+                logging.info("No file path entered.")
+                return
+            if file_path.lower() == "quit":
+                logging.info("Quitting...")
+                await pc.close()
+                return
+            if not os.path.exists(file_path):
+                logging.info("File does not exist.")
+                return
+            else: 
+                logging.info(f"Sending {file_path} to worker...")
+                file_name = os.path.basename(file_path)
+                file_size = os.path.getsize(file_path)
+                
+                # Send metadata first
+                channel.send(f"{file_name}:{file_size}")  
+
+                # Send file in chunks (32 KB)
+                with open(file_path, "rb") as file:
+                    logging.info(f"File opened: {file_path}")
+                    while chunk := file.read(CHUNK_SIZE):
+                        while channel.bufferedAmount > 16 * 1024 * 1024: # Wait if buffer >16MB 
+                            await asyncio.sleep(0.1)
+
+                        channel.send(chunk)
+
+                channel.send("END_OF_FILE")
+                logging.info(f"File sent to worker.")
+                    
+                # Flag data to True to prevent reg msg from being sent
+                data = True
+
+        if not data: # no file
+          channel.send(message)
+          logging.info(f"Message sent to worker.")
+        
+        # else: # file present
+        #   logging.info(f"Sending {file_path} to worker...")
+        #   file_name = os.path.basename(file_path)
+        #   file_size = os.path.getsize(file_path)
+
+        #   # Send metadata first
+        #   channel.send(f"{file_name}:{file_size}")  
+
+        #   # Send file in chunks
+        #   channel.send(data)
+        #   channel.send("END_OF_FILE")
+        #   logging.info(f"File sent to worker.")
 
 
     @channel.on("open")
@@ -125,6 +191,7 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
 			None
         """
 
+        asyncio.create_task(keep_ice_alive(channel))
         logging.info(f"{channel.label} is open")
         await send_client_messages()
     
@@ -132,7 +199,36 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
     @channel.on("message")
     async def on_message(message):
         logging.info(f"Client received: {message}")
-        await send_client_messages()
+        
+		# global received_files dictionary
+        global received_files
+        
+        if isinstance(message, str):
+            if message == "END_OF_FILE":
+                # File transfer complete, save to disk
+                file_name, file_data = list(received_files.items())[0]
+                file_path = os.path.join(SAVE_DIR, file_name)
+                
+                with open(file_path, "wb") as file:
+                    file.write(file_data)
+                logging.info(f"File saved as: {file_path}")
+                
+                received_files.clear()
+                await send_client_messages()
+            elif ":" in message:
+                # Metadata received (file name & size)
+                file_name, file_size = message.split(":")
+                received_files[file_name] = bytearray()
+                logging.info(f"File name received: {file_name}, of size {file_size}")
+            else:
+                logging.info(f"Worker sent: {message}")
+                await send_client_messages()
+                
+        elif isinstance(message, bytes):
+            file_name = list(received_files.keys())[0]
+            received_files.get(file_name).extend(message)
+                
+        # await send_client_messages()
 
 
     @pc.on("iceconnectionstatechange")
@@ -186,7 +282,7 @@ async def run_client(pc, peer_id: str, DNS: str, port_number: str):
 
 if __name__ == "__main__":
     pc = RTCPeerConnection()
-    DNS = sys.argv[1] if len(sys.argv) > 1 else "ws://ec2-34-230-32-163.compute-1.amazonaws.com"
+    DNS = sys.argv[1] if len(sys.argv) > 1 else "ws://ec2-3-80-210-101.compute-1.amazonaws.com"
     port_number = sys.argv[2] if len(sys.argv) > 1 else 8080
 
     try: 

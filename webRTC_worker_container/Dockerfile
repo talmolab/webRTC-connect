@@ -17,6 +17,13 @@ FROM python:3.9-slim
   
 # Install websocket dependencies onto image @ build time (asyncio is included in python3.8)
 # put into requirement.txt later
+
+# Install required dependencies (jq, nano, tree, etc.)
+RUN apt update && apt install -y \
+    jq \
+    && rm -rf /var/lib/apt/lists/* 
+
+# Install aiortc, asyncio, and websockets
 RUN pip install aiortc asyncio websockets
 
 # Copy the sleap_webRTC directory into the image's root dir
@@ -24,6 +31,9 @@ COPY worker.py /app/worker.py
 
 # Ensure executable
 RUN chmod +x /app/worker.py
+
+# Create shared file directory inside container 
+RUN mkdir -p /app/shared_data && chmod 777 /app/shared_data
 
 # Port exposed by the container, NOT computer (localhost), 8080 = websocket server, 3478 = TURN server
 EXPOSE 8080 5000 3478/udp 3478/tcp

@@ -17,19 +17,29 @@ CHUNK_SIZE = 32 * 1024
 
 # directory to save files received from client
 SAVE_DIR = "/app/shared_data"
-ZIP_DIR = "shared_data/models/results.zip"
+ZIP_DIR = "/app/shared_data/models"
 received_files = {}
 
-async def zip_results():
+async def zip_results(file_path):
     """Zips the contents of the shared_data directory and saves it to a zip file."""
     logging.info("Zipping results...")
     if os.path.exists(ZIP_DIR):
-        
-      shutil.make_archive(ZIP_DIR.replace(".zip", ""), 'zip', SAVE_DIR)
-      logging.info(f"Results zipped to {ZIP_DIR}")
+        shutil.make_archive(file_path.replace(".zip", ""), 'zip', SAVE_DIR)
+        logging.info(f"Results zipped to {file_path}")
     else:
-      logging.info("Results already zipped or directory does not exist!")
-      return
+        logging.info("Results already zipped or directory does not exist!")
+        return
+
+
+async def unzip_results(file_path):
+    """Unzips the contents of the given file path."""
+    logging.info("Unzipping results...")
+    if os.path.exists(file_path):
+        shutil.unpack_archive(file_path, SAVE_DIR)
+        logging.info(f"Results unzipped from {file_path}")
+    else:
+        logging.info("Results already unzipped or directory does not exist!")
+        return
     
 
 async def clean_exit(pc, websocket):
@@ -186,8 +196,57 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
         # listen for incoming messages on the channel
         logging.info("channel(%s) %s" % (channel.label, "created by remote party & received."))
-        file_data = bytearray()
-        file_name = "default_receieved_file.bin"
+        # file_data = bytearray()
+        # file_name = "default_receieved_file.bin"
+
+    
+        async def send_worker_file(file_path):
+            """Handles direct, one-way file transfer from client to be sent to client peer.
+            
+            Takes file from worker and sends it to client peer via datachannel. Doesn't require typed responses.
+        
+            Args:
+                None
+            
+            Returns:
+                None
+            
+            """
+            
+            if channel.readyState != "open":
+                logging.info(f"Data channel not open. Ready state is: {channel.readyState}")
+                return 
+
+            logging.info(f"Given file path {file_path}")
+            if not file_path:
+                logging.info("No file path entered.")
+                return
+            if not os.path.exists(file_path):
+                logging.info("File does not exist.")
+                return
+            else: 
+                logging.info(f"Sending {file_path} to client...")
+
+                # Obtain metadata
+                file_name = os.path.basename(file_path)
+                file_size = os.path.getsize(file_path)
+                
+                # Send metadata first
+                channel.send(f"{file_name}:{file_size}")  
+
+                # Send file in chunks (32 KB)
+                with open(file_path, "rb") as file:
+                    logging.info(f"File opened: {file_path}")
+                    while chunk := file.read(CHUNK_SIZE):
+                        while channel.bufferedAmount is not None and channel.bufferedAmount > 16 * 1024 * 1024: # Wait if buffer >16MB 
+                            await asyncio.sleep(0.1)
+
+                        channel.send(chunk)
+
+                channel.send("END_OF_FILE")
+                logging.info(f"File sent to client.")
+                
+            return
         
 
         @pc.on("iceconnectionstatechange")
@@ -255,11 +314,40 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                         file.write(file_data)
                     logging.info(f"File saved as: {file_path}")
 
-                    # Reset for next file and reprompt worker
+                    # Unzip results if needed
+                    if file_path.endswith(".zip"):
+                        await unzip_results(file_path)
+                        logging.info(f"Unzipped results from {file_path}")
+
+                    # Reset for next file and train model
                     received_files.clear()
-                    logging.info("Zipping results...")
-                    await zip_results()
-                    logging.info(f"Zipping complete! Results zipped to {ZIP_DIR}")
+
+                    train_script_path = os.path.join(SAVE_DIR, "train-script.sh")
+
+                    if os.path.exists(train_script_path):
+                        try:
+                            logging.info(f"Running training script: {train_script_path}")
+                            result = subprocess.run(
+                                ["bash", train_script_path],  # Use bash to run it
+                                check=True,
+                                capture_output=True,
+                                text=True
+                            )
+                            logging.info("Training completed successfully.")
+                            logging.debug(result.stdout)
+
+                            logging.info("Zipping results...")
+                            zipped_file_name = f"trained_{file_name}.zip"
+                            await zip_results(zipped_file_name)
+                            logging.info(f"Results zipped to: {zipped_file_name}")
+
+                            await send_worker_file(zipped_file_name)
+
+
+                        except subprocess.CalledProcessError as e:
+                            logging.error(f"Training failed with error:\n{e.stderr}")
+                    else:
+                        logging.info(f"No training script found in {SAVE_DIR}. Skipping training.")
 
                     await send_worker_messages(channel, pc, websocket)
                 else:

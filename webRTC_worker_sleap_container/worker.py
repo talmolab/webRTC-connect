@@ -1,5 +1,6 @@
 import asyncio
 import subprocess
+import stat
 import sys
 import websockets
 import json
@@ -20,12 +21,16 @@ SAVE_DIR = "/app/shared_data"
 ZIP_DIR = "/app/shared_data/models"
 received_files = {}
 
-async def zip_results(file_path):
+async def zip_results(file_name, dir_path): # trained_model.zip, /app/shared_data/models
     """Zips the contents of the shared_data directory and saves it to a zip file."""
     logging.info("Zipping results...")
-    if os.path.exists(ZIP_DIR):
-        shutil.make_archive(file_path.replace(".zip", ""), 'zip', SAVE_DIR)
-        logging.info(f"Results zipped to {file_path}")
+    if os.path.exists(dir_path):
+        try:
+            shutil.make_archive(file_name.replace(".zip", ""), 'zip', dir_path)
+            logging.info(f"Results zipped to {SAVE_DIR}/{file_name}")
+        except Exception as e:
+            logging.error(f"Error zipping results: {e}")
+            return
     else:
         logging.info("Results already zipped or directory does not exist!")
         return
@@ -35,8 +40,12 @@ async def unzip_results(file_path):
     """Unzips the contents of the given file path."""
     logging.info("Unzipping results...")
     if os.path.exists(file_path):
-        shutil.unpack_archive(file_path, SAVE_DIR)
-        logging.info(f"Results unzipped from {file_path}")
+        try:
+            shutil.unpack_archive(file_path, SAVE_DIR)
+            logging.info(f"Results unzipped from {file_path}")
+        except Exception as e:
+            logging.error(f"Error unzipping results: {e}")
+            return
     else:
         logging.info("Results already unzipped or directory does not exist!")
         return
@@ -327,25 +336,31 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                     if os.path.exists(train_script_path):
                         try:
                             logging.info(f"Running training script: {train_script_path}")
-                            result = subprocess.run(
-                                ["bash", train_script_path],  # Use bash to run it
+
+                            # Make the script executable
+                            os.chmod(train_script_path, os.stat(train_script_path).st_mode | stat.S_IEXEC)
+
+                            # Run the training script in the save directory
+                            result = await subprocess.run(
+                                ["bash", "train-script.sh"],  # Use bash to run it
                                 check=True,
                                 capture_output=True,
-                                text=True
+                                text=True,
+                                cwd=SAVE_DIR  # Set the working directory to SAVE_DIR
                             )
                             logging.info("Training completed successfully.")
                             logging.debug(result.stdout)
 
                             logging.info("Zipping results...")
                             zipped_file_name = f"trained_{file_name}.zip"
-                            await zip_results(zipped_file_name)
-                            logging.info(f"Results zipped to: {zipped_file_name}")
+                            await zip_results(zipped_file_name, ZIP_DIR)
 
+                            logging.info(f"Sending zipped file to client: {zipped_file_name}")
                             await send_worker_file(zipped_file_name)
-
 
                         except subprocess.CalledProcessError as e:
                             logging.error(f"Training failed with error:\n{e.stderr}")
+                            await clean_exit(pc, websocket)
                     else:
                         logging.info(f"No training script found in {SAVE_DIR}. Skipping training.")
 

@@ -341,15 +341,28 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                             os.chmod(train_script_path, os.stat(train_script_path).st_mode | stat.S_IEXEC)
 
                             # Run the training script in the save directory
-                            result = await subprocess.run(
-                                ["bash", "train-script.sh"],  # Use bash to run it
-                                check=True,
-                                capture_output=True,
-                                text=True,
-                                cwd=SAVE_DIR  # Set the working directory to SAVE_DIR
+                            process = await asyncio.create_subprocess_exec(
+                                "bash", "train-script.sh",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.STDOUT,
+                                cwd=SAVE_DIR
                             )
+
+                            assert process.stdout is not None
+                            async for line in process.stdout:
+                                logging.info(line.decode().rstrip())
+                            
+                            await process.wait()
+
+
+                            # result = await subprocess.run(
+                            #     ["bash", "train-script.sh"],  # Use bash to run it
+                            #     check=True,
+                            #     capture_output=True,
+                            #     text=True,
+                            #     cwd=SAVE_DIR  # Set the working directory to SAVE_DIR
+                            # )
                             logging.info("Training completed successfully.")
-                            logging.debug(result.stdout)
 
                             logging.info("Zipping results...")
                             zipped_file_name = f"trained_{file_name}.zip"

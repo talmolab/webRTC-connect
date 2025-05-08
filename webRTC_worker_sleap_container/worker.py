@@ -26,8 +26,8 @@ async def zip_results(file_name, dir_path): # trained_model.zip, /app/shared_dat
     logging.info("Zipping results...")
     if os.path.exists(dir_path):
         try:
-            shutil.make_archive(file_name.replace(".zip", ""), 'zip', dir_path)
-            logging.info(f"Results zipped to {SAVE_DIR}/{file_name}")
+            shutil.make_archive(file_name, 'zip', dir_path)
+            logging.info(f"Results zipped to {SAVE_DIR}/{file_name}.zip")
         except Exception as e:
             logging.error(f"Error zipping results: {e}")
             return
@@ -350,7 +350,14 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                             assert process.stdout is not None
                             async for line in process.stdout:
-                                logging.info(line.decode().rstrip())
+                                decoded_line = line.decode().rstrip()
+                                logging.info(decoded_line)
+
+                                if channel.readyState == "open":
+                                    try:
+                                        channel.send(f"TRAIN_LOG:{decoded_line}")
+                                    except Exception as e:
+                                        logging.error(f"Failed to send log line: {e}")
                             
                             await process.wait()
 
@@ -365,7 +372,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                             logging.info("Training completed successfully.")
 
                             logging.info("Zipping results...")
-                            zipped_file_name = f"trained_{file_name}.zip"
+                            zipped_file_name = f"trained_{file_name}"
                             await zip_results(zipped_file_name, ZIP_DIR)
 
                             logging.info(f"Sending zipped file to client: {zipped_file_name}")

@@ -26,8 +26,8 @@ async def zip_results(file_name, dir_path): # trained_model.zip, /app/shared_dat
     logging.info("Zipping results...")
     if os.path.exists(dir_path):
         try:
-            shutil.make_archive(file_name, 'zip', dir_path)
-            logging.info(f"Results zipped to {SAVE_DIR}/{file_name}.zip")
+            shutil.make_archive(file_name.split(".")[0], 'zip', dir_path)
+            logging.info(f"Results zipped to {file_name}")
         except Exception as e:
             logging.error(f"Error zipping results: {e}")
             return
@@ -372,7 +372,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                             logging.info("Training completed successfully.")
 
                             logging.info("Zipping results...")
-                            zipped_file_name = f"trained_{file_name}"
+                            zipped_file_name = f"trained_{file_name}" # i.e. trained_tmph39.zip
                             await zip_results(zipped_file_name, ZIP_DIR)
 
                             logging.info(f"Sending zipped file to client: {zipped_file_name}")

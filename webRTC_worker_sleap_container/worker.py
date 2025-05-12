@@ -192,6 +192,12 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         Returns:
           None
     """
+    async def keep_ice_alive(channel):
+        while True:
+            await asyncio.sleep(15)
+            if channel.readyState == "open":
+                channel.send(b"KEEP_ALIVE")
+
     # websockets are only necessary here for setting up exchange of SDP & ICE candidates to each other
     
     # 2. listen for incoming data channel messages on channel established by the client
@@ -293,6 +299,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                 Returns:
                   None
             """
+            asyncio.create_task(keep_ice_alive(channel))
             logging.info(f'{channel.label} channel is open')
         
         @channel.on("message")

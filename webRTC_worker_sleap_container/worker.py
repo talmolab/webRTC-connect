@@ -113,7 +113,7 @@ async def send_worker_messages(channel, pc, websocket):
             file_size = os.path.getsize(file_path)
             
             # Send metadata first
-            channel.send(f"{file_name}:{file_size}")
+            channel.send(f"FILE_META::{file_name}:{file_size}")
             
             # Send file in chunks (32 KB)
             with open(file_path, "rb") as file:
@@ -385,11 +385,16 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                         logging.info(f"No training script found in {SAVE_DIR}. Skipping training.")
 
                     await send_worker_messages(channel, pc, websocket)
-                else:
+                elif message.startswith("FILE_META::"):
                     # Metadata received (file name & size)
-                    file_name, file_size = message.split(":")
+                    _, meta = message.split("FILE_META::", 1)
+                    file_name, file_size = meta.split(":")
+
+                    # file_name, file_size = message.split(":")
                     received_files[file_name] = bytearray()
                     logging.info(f"File name received: {file_name}, of size {file_size}")
+                else:
+                    logging.info(f"Client sent: {message}")
 
 
             elif isinstance(message, bytes):

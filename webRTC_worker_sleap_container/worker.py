@@ -307,6 +307,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
             # receive client message
             logging.info(f"Worker received: {message}")
+            logging.info(f"Received message of type: {type(message)}")
 
             # global received_files dictionary
             global received_files
@@ -317,6 +318,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                     return
 
                 if message == "END_OF_FILE":
+                    logging.info("End of file transfer received.")
                     # File transfer complete, save to disk
                     file_name, file_data = list(received_files.items())[0]
                     file_path = os.path.join(SAVE_DIR, file_name)
@@ -400,6 +402,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
 
             elif isinstance(message, bytes):
+                logging.info (f"{message} is of type {type(message)} and in elif statement")
                 if message == b"KEEP_ALIVE":
                     logging.info("Keep alive message received.")
                     return

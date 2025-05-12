@@ -111,9 +111,10 @@ async def send_worker_messages(channel, pc, websocket):
             logging.info(f"Sending {file_path} to client...")
             file_name = os.path.basename(file_path)
             file_size = os.path.getsize(file_path)
+            file_save_dir = "models" # SHOULD ORIGINATE FROM training_config.json
             
             # Send metadata first
-            channel.send(f"FILE_META::{file_name}:{file_size}")
+            channel.send(f"FILE_META::{file_name}:{file_size}:{file_save_dir}")
             
             # Send file in chunks (32 KB)
             with open(file_path, "rb") as file:
@@ -239,9 +240,10 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                 # Obtain metadata
                 file_name = os.path.basename(file_path)
                 file_size = os.path.getsize(file_path)
+                file_save_dir = "models" # SHOULD ORIGINATE FROM training_config.json
                 
                 # Send metadata first
-                channel.send(f"{file_name}:{file_size}")  
+                channel.send(f"FILE_META::{file_name}:{file_size}:{file_save_dir}")
 
                 # Send file in chunks (32 KB)
                 with open(file_path, "rb") as file:

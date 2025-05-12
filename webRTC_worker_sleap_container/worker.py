@@ -395,7 +395,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                     else:
                         logging.info(f"No training script found in {SAVE_DIR}. Skipping training.")
 
-                    await send_worker_messages(channel, pc, websocket)
+                    # await send_worker_messages(channel, pc, websocket)
                 elif "FILE_META::" in message:
                     logging.info(f"File metadata received: {message}")
                     # Metadata received (file name & size)
@@ -407,6 +407,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                     logging.info(f"File name received: {file_name}, of size {file_size}")
                 else:
                     logging.info(f"Client sent: {message}")
+                    await send_worker_messages(channel, pc, websocket)
 
 
             elif isinstance(message, bytes):

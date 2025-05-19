@@ -157,6 +157,9 @@ async def handle_connection(pc, websocket):
                 
                 # 1c. send worker's answer SDP to client so they can set it as their remote description
                 await websocket.send(json.dumps({'type': pc.localDescription.type, 'target': data.get('target'), 'sdp': pc.localDescription.sdp}))
+
+                # 1d. reset received_files dictionary
+                received_files.clear()
             
             # 2. to handle "trickle ICE" for non-local ICE candidates (might be unnecessary)
             elif data.get('type') == 'candidate':
@@ -281,14 +284,22 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                 logging.ERROR('ICE connection failed')
                 await clean_exit(pc, websocket)
                 return
-            elif pc.iceConnectionState in ["failed", "disconnected"]:
-                logging.info("ICE connection failed/disconnected. Closing connection.")
+            elif pc.iceConnectionState in ["failed", "disconnected", "closed"]:
+                logging.info(f"ICE connection {pc.iceConnectionState}. Waiting for reconnect...")
+                for i in range(90):  # Wait up to 90 seconds
+                    await asyncio.sleep(1)
+                    if pc.iceConnectionState in ["connected", "completed"]:
+                        logging.info("ICE reconnected!")
+                        return
+
+                logging.error("Reconnection timed out. Closing connection.")
                 await clean_exit(pc, websocket)
-                return
-            elif pc.iceConnectionState == "closed":
-                logging.info("ICE connection closed.")
-                await clean_exit(pc, websocket)
-                return
+                # await clean_exit(pc, websocket)
+                # return
+            # elif pc.iceConnectionState == "closed":
+            #     logging.info("ICE connection closed.")
+            #     await clean_exit(pc, websocket)
+            #     return
             
         @channel.on("open")
         def on_channel_open():
@@ -458,7 +469,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         
 if __name__ == "__main__":
     pc = RTCPeerConnection()
-    DNS = sys.argv[1] if len(sys.argv) > 1 else "ws://ec2-3-80-210-101.compute-1.amazonaws.com"
+    DNS = sys.argv[1] if len(sys.argv) > 1 else "ws://ec2-54-176-92-10.us-west-1.compute.amazonaws.com"
     port_number = sys.argv[2] if len(sys.argv) > 1 else 8080
     try:
         asyncio.run(run_worker(pc, "worker1", DNS, port_number))

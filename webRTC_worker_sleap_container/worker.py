@@ -9,6 +9,7 @@ import shutil
 import os
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
+from websockets.client import ClientConnection
 
 # Setup logging.
 logging.basicConfig(level=logging.INFO)
@@ -22,9 +23,7 @@ received_files = {}
 output_dir = ""
 
 async def zip_results(file_name: str, dir_path: str):
-    """
-    Zips the contents of the shared_data directory and saves it to a zip file.
-    """
+    """Zips the contents of the shared_data directory and saves it to a zip file."""
 
     logging.info("Zipping results...")
     if os.path.exists(dir_path):
@@ -39,7 +38,7 @@ async def zip_results(file_name: str, dir_path: str):
         return
 
 
-async def unzip_results(file_path):
+async def unzip_results(file_path: str):
     """
     Unzips the contents of the given file path.
     """
@@ -57,7 +56,7 @@ async def unzip_results(file_path):
         return
     
 
-async def clean_exit(pc: RTCPeerConnection, websocket):
+async def clean_exit(pc: RTCPeerConnection, websocket: ClientConnection):
     """ Handles cleanup and shutdown of the worker.
         Args:
             pc: RTCPeerConnection object
@@ -75,7 +74,7 @@ async def clean_exit(pc: RTCPeerConnection, websocket):
     logging.info("Client shutdown complete. Exiting...")
 
 
-async def send_worker_messages(channel, pc):
+async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
     """Handles typed messages from worker to be sent to client peer.
         
 		  Takes input from worker and sends it to client peer via datachannel. Additionally, prompts for file upload to be sent to client.
@@ -139,7 +138,7 @@ async def send_worker_messages(channel, pc):
         logging.info(f"Message sent to client.")
 
 
-async def handle_connection(pc, websocket):
+async def handle_connection(pc: RTCPeerConnection, websocket: ClientConnection):
     """ Handles incoming messages from the signaling server and processes them accordingly.
         Args:
             pc: RTCPeerConnection object
@@ -218,7 +217,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
     
     # 2. listen for incoming data channel messages on channel established by the client
     @pc.on("datachannel")
-    def on_datachannel(channel):
+    def on_datachannel(channel: RTCDataChannel):
         """ Handles incoming data channel messages from the client.
             Args:
                 channel: DataChannel object
@@ -232,7 +231,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         # file_name = "default_receieved_file.bin"
 
     
-        async def send_worker_file(file_path):
+        async def send_worker_file(file_path: str):
             """Handles direct, one-way file transfer from client to be sent to client peer.
             
             Takes file from worker and sends it to client peer via datachannel. Doesn't require typed responses.
@@ -262,7 +261,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                 # Obtain metadata
                 file_name = os.path.basename(file_path)
                 file_size = os.path.getsize(file_path)
-                file_save_dir = "models" # SHOULD ORIGINATE FROM training_config.json
+                file_save_dir = output_dir
                 
                 # Send metadata first
                 channel.send(f"FILE_META::{file_name}:{file_size}:{file_save_dir}")
@@ -307,12 +306,8 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                 logging.error("Reconnection timed out. Closing connection.")
                 await clean_exit(pc, websocket)
-                # await clean_exit(pc, websocket)
-                # return
-            # elif pc.iceConnectionState == "closed":
-            #     logging.info("ICE connection closed.")
-            #     await clean_exit(pc, websocket)
-            #     return
+            else:
+                await clean_exit(pc, websocket)
             
         @channel.on("open")
         def on_channel_open():
@@ -327,7 +322,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             logging.info(f'{channel.label} channel is open')
         
         @channel.on("message")
-        async def on_message(message):
+        async def on_message(message: str | bytes):
             """
               Handles incoming messages from the client.
                 Args:
@@ -338,7 +333,6 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
             # receive client message
             logging.info(f"Worker received: {message}")
-            logging.info(f"Received message of type: {type(message)}")
 
             # global received_files dictionary
             global received_files
@@ -397,20 +391,14 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                             
                             await process.wait()
 
-
-                            # result = await subprocess.run(
-                            #     ["bash", "train-script.sh"],  # Use bash to run it
-                            #     check=True,
-                            #     capture_output=True,
-                            #     text=True,
-                            #     cwd=SAVE_DIR  # Set the working directory to SAVE_DIR
-                            # )
                             logging.info("Training completed successfully.")
-
                             logging.info("Zipping results...")
-                            zipped_file_name = f"trained_{file_name}" # i.e. trained_tmph39.zip
+
+                            # Zip the results.
+                            zipped_file_name = f"trained_{file_name}"
                             await zip_results(zipped_file_name, f"{SAVE_DIR}/{output_dir}")
 
+                            # Send the zipped file to the client.
                             logging.info(f"Sending zipped file to client: {zipped_file_name}")
                             await send_worker_file(zipped_file_name)
 
@@ -420,28 +408,22 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                     else:
                         logging.info(f"No training script found in {SAVE_DIR}. Skipping training.")
 
-                    # await send_worker_messages(channel, pc, websocket)
-
                 elif "OUTPUT_DIR::" in message:
                     logging.info(f"Output directory received: {message}")
                     _, output_dir = message.split("OUTPUT_DIR::", 1)
 
                 elif "FILE_META::" in message:
                     logging.info(f"File metadata received: {message}")
-                    # Metadata received (file name & size)
                     _, meta = message.split("FILE_META::", 1)
                     file_name, file_size = meta.split(":")
 
-                    # file_name, file_size = message.split(":")
                     received_files[file_name] = bytearray()
                     logging.info(f"File name received: {file_name}, of size {file_size}")
                 else:
                     logging.info(f"Client sent: {message}")
                     await send_worker_messages(channel, pc, websocket)
 
-
             elif isinstance(message, bytes):
-                logging.info (f"{message} is of type {type(message)} and in elif statement")
                 if message == b"KEEP_ALIVE":
                     logging.info("Keep alive message received.")
                     return
@@ -450,19 +432,18 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                 received_files.get(file_name).extend(message)
 
 
-    # 1. worker registers with the signaling server (temp: localhost:8080) via websocket connection
-    # This is how the worker will know the client peer exists
+    # Establish a WebSocket connection to the signaling server.
     async with websockets.connect(f"{DNS}:{port_number}") as websocket:
-        # 1a. register the worker with the server
+
+        # Register the worker with the server.
         await websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
         logging.info(f"{peer_id} sent to signaling server for registration!")
 
-        # 1b. handle incoming messages from server (e.g. answers)
+        # Handle incoming messages from server (e.g. answers).
         await handle_connection(pc, websocket)
-        logging.info(f"{peer_id} connected with client!" )
+        logging.info(f"{peer_id} connected with client!")
 
 
-    # ICE, or Interactive Connectivity Establishment, is a protocol used in WebRTC to establish a connection
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
         """ Handles ICE connection state changes.
@@ -471,19 +452,27 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             Returns:
               None
         """
+        
+        # Log the ICE connection state.
         logging.info(f"ICE connection state is now {pc.iceConnectionState}")
+
+        # Check the ICE connection state and handle accordingly.
         if pc.iceConnectionState == "failed":
             logging.ERROR('ICE connection failed')
             await clean_exit(pc, websocket)
             return
-        elif pc.iceConnectionState in ["failed", "disconnected"]:
-            logging.info("ICE connection failed/disconnected. Closing connection.")
+        elif pc.iceConnectionState in ["failed", "disconnected", "closed"]:
+            logging.info(f"ICE connection {pc.iceConnectionState}. Waiting for reconnect...")
+            for i in range(90):  # Wait up to 90 seconds
+                await asyncio.sleep(1)
+                if pc.iceConnectionState in ["connected", "completed"]:
+                    logging.info("ICE reconnected!")
+                    return
+
+            logging.error("Reconnection timed out. Closing connection.")
             await clean_exit(pc, websocket)
-            return
-        elif pc.iceConnectionState == "closed":
-            logging.info("ICE connection closed.")
+        else:
             await clean_exit(pc, websocket)
-            return
     
         
 if __name__ == "__main__":

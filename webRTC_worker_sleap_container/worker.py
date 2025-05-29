@@ -10,19 +10,22 @@ import os
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 
-# setup logging
+# Setup logging.
 logging.basicConfig(level=logging.INFO)
 
-# global variables
+# Global constants.
 CHUNK_SIZE = 32 * 1024
-
-# directory to save files received from client
 SAVE_DIR = "/app/shared_data"
-ZIP_DIR = "/app/shared_data/models"
-received_files = {}
 
-async def zip_results(file_name, dir_path): # trained_model.zip, /app/shared_data/models
-    """Zips the contents of the shared_data directory and saves it to a zip file."""
+# Global variables.
+received_files = {}
+output_dir = ""
+
+async def zip_results(file_name: str, dir_path: str):
+    """
+    Zips the contents of the shared_data directory and saves it to a zip file.
+    """
+
     logging.info("Zipping results...")
     if os.path.exists(dir_path):
         try:
@@ -32,12 +35,15 @@ async def zip_results(file_name, dir_path): # trained_model.zip, /app/shared_dat
             logging.error(f"Error zipping results: {e}")
             return
     else:
-        logging.info("Results already zipped or directory does not exist!")
+        logging.info(f"{dir_path} does not exist!")
         return
 
 
 async def unzip_results(file_path):
-    """Unzips the contents of the given file path."""
+    """
+    Unzips the contents of the given file path.
+    """
+
     logging.info("Unzipping results...")
     if os.path.exists(file_path):
         try:
@@ -47,11 +53,11 @@ async def unzip_results(file_path):
             logging.error(f"Error unzipping results: {e}")
             return
     else:
-        logging.info("Results already unzipped or directory does not exist!")
+        logging.info(f"{file_path} does not exist!")
         return
     
 
-async def clean_exit(pc, websocket):
+async def clean_exit(pc: RTCPeerConnection, websocket):
     """ Handles cleanup and shutdown of the worker.
         Args:
             pc: RTCPeerConnection object
@@ -69,7 +75,7 @@ async def clean_exit(pc, websocket):
     logging.info("Client shutdown complete. Exiting...")
 
 
-async def send_worker_messages(channel, pc, websocket):
+async def send_worker_messages(channel, pc):
     """Handles typed messages from worker to be sent to client peer.
         
 		  Takes input from worker and sends it to client peer via datachannel. Additionally, prompts for file upload to be sent to client.
@@ -111,7 +117,7 @@ async def send_worker_messages(channel, pc, websocket):
             logging.info(f"Sending {file_path} to client...")
             file_name = os.path.basename(file_path)
             file_size = os.path.getsize(file_path)
-            file_save_dir = "models" # SHOULD ORIGINATE FROM training_config.json
+            file_save_dir = output_dir 
             
             # Send metadata first
             channel.send(f"FILE_META::{file_name}:{file_size}:{file_save_dir}")
@@ -140,7 +146,7 @@ async def handle_connection(pc, websocket):
             websocket: WebSocket connection object
         Returns:
             None    
-        """
+    """
     try:
         async for message in websocket:
             data = json.loads(message)
@@ -195,7 +201,14 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         Returns:
           None
     """
-    async def keep_ice_alive(channel):
+
+    async def keep_ice_alive(channel: RTCDataChannel):
+        """ Sends periodic keep-alive messages to the client to maintain the connection.
+            Args:
+                channel: DataChannel object
+            Returns:
+                None
+        """
         while True:
             await asyncio.sleep(15)
             if channel.readyState == "open":
@@ -329,6 +342,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
             # global received_files dictionary
             global received_files
+            global output_dir
             
             if isinstance(message, str):
                 if message == b"KEEP_ALIVE":
@@ -395,7 +409,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                             logging.info("Zipping results...")
                             zipped_file_name = f"trained_{file_name}" # i.e. trained_tmph39.zip
-                            await zip_results(zipped_file_name, ZIP_DIR)
+                            await zip_results(zipped_file_name, f"{SAVE_DIR}/{output_dir}")
 
                             logging.info(f"Sending zipped file to client: {zipped_file_name}")
                             await send_worker_file(zipped_file_name)
@@ -407,6 +421,11 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                         logging.info(f"No training script found in {SAVE_DIR}. Skipping training.")
 
                     # await send_worker_messages(channel, pc, websocket)
+
+                elif "OUTPUT_DIR::" in message:
+                    logging.info(f"Output directory received: {message}")
+                    _, output_dir = message.split("OUTPUT_DIR::", 1)
+
                 elif "FILE_META::" in message:
                     logging.info(f"File metadata received: {message}")
                     # Metadata received (file name & size)

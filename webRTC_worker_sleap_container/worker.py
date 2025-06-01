@@ -322,7 +322,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             logging.info(f'{channel.label} channel is open')
         
         @channel.on("message")
-        async def on_message(message: str | bytes):
+        async def on_message(message):
             """
               Handles incoming messages from the client.
                 Args:

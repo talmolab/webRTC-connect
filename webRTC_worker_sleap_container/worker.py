@@ -23,7 +23,15 @@ received_files = {}
 output_dir = ""
 
 async def zip_results(file_name: str, dir_path: str):
-    """Zips the contents of the shared_data directory and saves it to a zip file."""
+    """
+    Zips the contents of the shared_data directory and saves it to a zip file.
+
+    Args:
+        file_name: Name of the zip file to be created.
+        dir_path: Path to the directory to be zipped.
+    Returns:
+        None
+    """
 
     logging.info("Zipping results...")
     if os.path.exists(dir_path):
@@ -41,6 +49,11 @@ async def zip_results(file_name: str, dir_path: str):
 async def unzip_results(file_path: str):
     """
     Unzips the contents of the given file path.
+
+    Args:
+        file_path: Path to the zip file to be unzipped.
+    Returns:
+        None
     """
 
     logging.info("Unzipping results...")
@@ -57,12 +70,14 @@ async def unzip_results(file_path: str):
     
 
 async def clean_exit(pc: RTCPeerConnection, websocket: ClientConnection):
-    """ Handles cleanup and shutdown of the worker.
-        Args:
-            pc: RTCPeerConnection object
-            websocket: WebSocket connection object
-        Returns:
-            None    
+    """ 
+    Handles cleanup and shutdown of the worker.
+
+    Args:
+        pc: RTCPeerConnection object
+        websocket: WebSocket connection object
+    Returns:
+        None    
     """
 
     logging.info("Closing WebRTC connection...") 
@@ -75,17 +90,15 @@ async def clean_exit(pc: RTCPeerConnection, websocket: ClientConnection):
 
 
 async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
-    """Handles typed messages from worker to be sent to client peer.
-        
-		  Takes input from worker and sends it to client peer via datachannel. Additionally, prompts for file upload to be sent to client.
-	
-        Args:
-			None
-        
-		Returns:
-			None
-        
-        """
+    """
+    Handles typed messages from worker to be sent to client peer.
+	Additionally, prompts for file upload to be sent to client.
+
+    Args:
+        None
+    Returns:
+        None
+    """
 
     message = input("Enter message to send (type 'file' to prompt file or type 'quit' to exit): ")
     data = None
@@ -139,13 +152,16 @@ async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
 
 
 async def handle_connection(pc: RTCPeerConnection, websocket: ClientConnection):
-    """ Handles incoming messages from the signaling server and processes them accordingly.
-        Args:
-            pc: RTCPeerConnection object
-            websocket: WebSocket connection object
-        Returns:
-            None    
+    """ 
+    Handles incoming messages from the signaling server and processes them accordingly.
+
+    Args:
+        pc: RTCPeerConnection object
+        websocket: WebSocket connection object
+    Returns:
+        None    
     """
+
     try:
         async for message in websocket:
             data = json.loads(message)
@@ -191,57 +207,58 @@ async def handle_connection(pc: RTCPeerConnection, websocket: ClientConnection):
         
 async def run_worker(pc, peer_id: str, DNS: str, port_number):
     """
-      Main function to run the worker.
-        Args:
-          pc: RTCPeerConnection object
-          peer_id: ID of the worker peer
-          DNS: DNS address of the signaling server
-          port_number: Port number of the signaling server
-        Returns:
-          None
+    Main function to run the worker. Contains several event handlers for the WebRTC 
+    connection and data channel.
+    
+    Args:
+        pc: RTCPeerConnection object
+        peer_id: ID of the worker peer
+        DNS: DNS address of the signaling server
+        port_number: Port number of the signaling server
+    Returns:
+        None
     """
 
     async def keep_ice_alive(channel: RTCDataChannel):
-        """ Sends periodic keep-alive messages to the client to maintain the connection.
-            Args:
-                channel: DataChannel object
-            Returns:
-                None
+        """ 
+        Sends periodic keep-alive messages to the client to maintain the connection.
+        
+        Args:
+            channel: DataChannel object
+        Returns:
+            None
         """
+
         while True:
             await asyncio.sleep(15)
             if channel.readyState == "open":
                 channel.send(b"KEEP_ALIVE")
 
-    # websockets are only necessary here for setting up exchange of SDP & ICE candidates to each other
-    
-    # 2. listen for incoming data channel messages on channel established by the client
+
+    # Websockets are only necessary here for setting up exchange of SDP & ICE candidates to each other.
+    # Listen for incoming data channel messages on channel established by the client.
     @pc.on("datachannel")
     def on_datachannel(channel: RTCDataChannel):
-        """ Handles incoming data channel messages from the client.
-            Args:
-                channel: DataChannel object
-            Returns:
-                None
+        """ 
+        Handles incoming data channel messages from the client.
+
+        Args:
+            channel: DataChannel object
+        Returns:
+            None
         """
 
-        # listen for incoming messages on the channel
+        # Listen for incoming messages on the channel.
         logging.info("channel(%s) %s" % (channel.label, "created by remote party & received."))
-        # file_data = bytearray()
-        # file_name = "default_receieved_file.bin"
-
     
         async def send_worker_file(file_path: str):
-            """Handles direct, one-way file transfer from client to be sent to client peer.
-            
-            Takes file from worker and sends it to client peer via datachannel. Doesn't require typed responses.
+            """
+            Handles direct, one-way file transfer from client to be sent to client peer.
         
             Args:
-                None
-            
+                file_path: Path to the file to be sent.
             Returns:
                 None
-            
             """
             
             if channel.readyState != "open":
@@ -258,15 +275,15 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             else: 
                 logging.info(f"Sending {file_path} to client...")
 
-                # Obtain metadata
+                # Obtain metadata.
                 file_name = os.path.basename(file_path)
                 file_size = os.path.getsize(file_path)
                 file_save_dir = output_dir
                 
-                # Send metadata first
+                # Send metadata first.
                 channel.send(f"FILE_META::{file_name}:{file_size}:{file_save_dir}")
 
-                # Send file in chunks (32 KB)
+                # Send file in chunks (32 KB).
                 with open(file_path, "rb") as file:
                     logging.info(f"File opened: {file_path}")
                     while chunk := file.read(CHUNK_SIZE):
@@ -284,10 +301,11 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
             """
-              Logs the ICE connection state and handles connection state changes.
-              Args:
+            Logs the ICE connection state and handles connection state changes.
+
+            Args:
                 None
-              Returns:
+            Returns:
                 None
             """
 
@@ -312,29 +330,32 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         @channel.on("open")
         def on_channel_open():
             """
-              Logs the channel open event.
-                Args:
-                  None
-                Returns:
-                  None
+            Logs the channel open event.
+
+            Args:
+                None
+            Returns:
+                None
             """
+
             asyncio.create_task(keep_ice_alive(channel))
             logging.info(f'{channel.label} channel is open')
         
         @channel.on("message")
-        async def on_message(message: str | bytes):
+        async def on_message(message):
             """
-              Handles incoming messages from the client.
-                Args:
-                  message: The message received from the client (can be string or bytes)
-                Returns:
-                  None
+            Handles incoming messages from the client.
+
+            Args:
+                message: The message received from the client (can be string or bytes)
+            Returns:
+                None
             """
 
-            # receive client message
+            # Receive client message.
             logging.info(f"Worker received: {message}")
 
-            # global received_files dictionary
+            # Global received_files dictionary.
             global received_files
             global output_dir
             
@@ -345,7 +366,8 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                 if message == "END_OF_FILE":
                     logging.info("End of file transfer received.")
-                    # File transfer complete, save to disk
+
+                    # File transfer complete, save to disk.
                     file_name, file_data = list(received_files.items())[0]
                     file_path = os.path.join(SAVE_DIR, file_name)
 
@@ -353,12 +375,12 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                         file.write(file_data)
                     logging.info(f"File saved as: {file_path}")
 
-                    # Unzip results if needed
+                    # Unzip results if needed.
                     if file_path.endswith(".zip"):
                         await unzip_results(file_path)
                         logging.info(f"Unzipped results from {file_path}")
 
-                    # Reset for next file and train model
+                    # Reset dictionary for next file and train model.
                     received_files.clear()
 
                     train_script_path = os.path.join(SAVE_DIR, "train-script.sh")
@@ -446,11 +468,13 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
-        """ Handles ICE connection state changes.
-            Args:
-              None
-            Returns:
-              None
+        """ 
+        Handles ICE connection state changes.
+
+        Args:
+            None
+        Returns:
+            None
         """
         
         # Log the ICE connection state.
@@ -463,7 +487,9 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             return
         elif pc.iceConnectionState in ["failed", "disconnected", "closed"]:
             logging.info(f"ICE connection {pc.iceConnectionState}. Waiting for reconnect...")
-            for i in range(90):  # Wait up to 90 seconds
+            
+            # Wait up to 90 seconds.
+            for i in range(90):  
                 await asyncio.sleep(1)
                 if pc.iceConnectionState in ["connected", "completed"]:
                     logging.info("ICE reconnected!")

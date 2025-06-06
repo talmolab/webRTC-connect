@@ -1,15 +1,21 @@
 import asyncio
+import shlex
 import subprocess
 import stat
 import sys
+import threading
 import websockets
 import json
 import logging
 import shutil
 import os
+import zmq
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 from websockets.client import ClientConnection
+
+# import sleap
+# from sleap.nn.training import main
 
 # Setup logging.
 logging.basicConfig(level=logging.INFO)
@@ -22,9 +28,55 @@ SAVE_DIR = "/app/shared_data"
 received_files = {}
 output_dir = ""
 
-async def zip_results(file_name: str, dir_path: str):
+
+async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "tcp://127.0.0.1:9001"):
+    """Starts a listener for ZMQ messages and sends progress updates to the client over the data channel.
+   
+    Args:
+        channel: DataChannel object to send progress updates.
+        zmq_address: Address of the ZMQ socket to connect to.
+    Returns:
+        None
     """
-    Zips the contents of the shared_data directory and saves it to a zip file.
+
+    # Initialize ZMQ context, socket and event loop.
+    logging.info("Starting ZMQ progress listener...")
+    context = zmq.Context()
+    socket = context.socket(zmq.SUB)
+    socket.connect(zmq_address)
+    socket.setsockopt_string(zmq.SUBSCRIBE, "")
+
+    loop = asyncio.get_event_loop()
+
+    def recv_msg():
+        """Receives a message from the ZMQ socket in a non-blocking way.
+        
+        Returns:
+            The received message as a JSON object, or None if no message is available.
+        """
+        
+        try:
+            return socket.recv_json(flags=zmq.NOBLOCK)
+        except zmq.Again:
+            return None
+
+    while True:
+        # Send progress as JSON string with prefix.
+        msg = await loop.run_in_executor(None, recv_msg)
+
+        if msg:
+            try:
+                if channel.readyState == "open":
+                    channel.send(f"PROGRESS_REPORT::{json.dumps(msg)}")
+            except Exception as e:
+                logging.error(f"Failed to send ZMQ progress: {e}")
+
+        # Polling interval.
+        await asyncio.sleep(0.05)
+
+
+async def zip_results(file_name: str, dir_path: str):
+    """Zips the contents of the shared_data directory and saves it to a zip file.
 
     Args:
         file_name: Name of the zip file to be created.
@@ -47,8 +99,7 @@ async def zip_results(file_name: str, dir_path: str):
 
 
 async def unzip_results(file_path: str):
-    """
-    Unzips the contents of the given file path.
+    """Unzips the contents of the given file path.
 
     Args:
         file_path: Path to the zip file to be unzipped.
@@ -70,8 +121,7 @@ async def unzip_results(file_path: str):
     
 
 async def clean_exit(pc: RTCPeerConnection, websocket: ClientConnection):
-    """ 
-    Handles cleanup and shutdown of the worker.
+    """Handles cleanup and shutdown of the worker.
 
     Args:
         pc: RTCPeerConnection object
@@ -90,9 +140,7 @@ async def clean_exit(pc: RTCPeerConnection, websocket: ClientConnection):
 
 
 async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
-    """
-    Handles typed messages from worker to be sent to client peer.
-	Additionally, prompts for file upload to be sent to client.
+    """Handles typed messages from worker to be sent to client peer.
 
     Args:
         None
@@ -152,8 +200,7 @@ async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
 
 
 async def handle_connection(pc: RTCPeerConnection, websocket: ClientConnection):
-    """ 
-    Handles incoming messages from the signaling server and processes them accordingly.
+    """ Handles incoming messages from the signaling server and processes them accordingly.
 
     Args:
         pc: RTCPeerConnection object
@@ -206,9 +253,7 @@ async def handle_connection(pc: RTCPeerConnection, websocket: ClientConnection):
 
         
 async def run_worker(pc, peer_id: str, DNS: str, port_number):
-    """
-    Main function to run the worker. Contains several event handlers for the WebRTC 
-    connection and data channel.
+    """Main function to run the worker. Contains several event handlers for the WebRTC connection and data channel.
     
     Args:
         pc: RTCPeerConnection object
@@ -220,8 +265,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
     """
 
     async def keep_ice_alive(channel: RTCDataChannel):
-        """ 
-        Sends periodic keep-alive messages to the client to maintain the connection.
+        """Sends periodic keep-alive messages to the client to maintain the connection.
         
         Args:
             channel: DataChannel object
@@ -237,14 +281,13 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
     # Websockets are only necessary here for setting up exchange of SDP & ICE candidates to each other.
     # Listen for incoming data channel messages on channel established by the client.
-    @pc.on("datachannel")
+    @pc.on("datachannel")           
     def on_datachannel(channel: RTCDataChannel):
-        """ 
-        Handles incoming data channel messages from the client.
+        """Handles incoming data channel messages from the client.
 
         Args:
             channel: DataChannel object
-        Returns:
+        Returns: 
             None
         """
 
@@ -252,8 +295,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         logging.info("channel(%s) %s" % (channel.label, "created by remote party & received."))
     
         async def send_worker_file(file_path: str):
-            """
-            Handles direct, one-way file transfer from client to be sent to client peer.
+            """Handles direct, one-way file transfer from client to be sent to client peer.
         
             Args:
                 file_path: Path to the file to be sent.
@@ -300,8 +342,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
-            """
-            Logs the ICE connection state and handles connection state changes.
+            """Logs the ICE connection state and handles connection state changes.
 
             Args:
                 None
@@ -329,8 +370,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             
         @channel.on("open")
         def on_channel_open():
-            """
-            Logs the channel open event.
+            """Logs the channel open event.
 
             Args:
                 None
@@ -343,8 +383,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         
         @channel.on("message")
         async def on_message(message):
-            """
-            Handles incoming messages from the client.
+            """Handles incoming messages from the client.
 
             Args:
                 message: The message received from the client (can be string or bytes)
@@ -389,6 +428,20 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                         try:
                             logging.info(f"Running training script: {train_script_path}")
 
+                            # # Run training script directly with main.
+                            # args = []
+                            # with open(train_script_path, "r") as f:
+                            #     for line in f:
+                            #         line = line.strip()
+                            #         if line.startswith("#!"):
+                            #             continue
+                            #         parts = shlex.split(line)
+                            #         if parts and parts[0] == "sleap-train" and len(parts) >= 3:
+                            #             config, labels = parts[-2], parts[-1]
+                            #             args.append((config, labels))
+
+                            # main(args, )
+
                             # Make the script executable
                             os.chmod(train_script_path, os.stat(train_script_path).st_mode | stat.S_IEXEC)
 
@@ -401,15 +454,23 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                             )
 
                             assert process.stdout is not None
-                            async for line in process.stdout:
-                                decoded_line = line.decode().rstrip()
-                                logging.info(decoded_line)
+                            
+                            async def stream_logs():
+                                async for line in process.stdout:
+                                    decoded_line = line.decode().rstrip()
+                                    logging.info(decoded_line)
 
-                                if channel.readyState == "open":
-                                    try:
-                                        channel.send(f"TRAIN_LOG:{decoded_line}")
-                                    except Exception as e:
-                                        logging.error(f"Failed to send log line: {e}")
+                                    if channel.readyState == "open":
+                                        try:
+                                            channel.send(f"TRAIN_LOG:{decoded_line}")
+                                        except Exception as e:
+                                            logging.error(f"Failed to send log line: {e}")
+
+                            # Start both tasks concurrently.
+                            await asyncio.gather(
+                                stream_logs(),
+                                start_progress_listener(channel)
+                            )
                             
                             await process.wait()
 
@@ -468,8 +529,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
-        """ 
-        Handles ICE connection state changes.
+        """Handles ICE connection state changes.
 
         Args:
             None
@@ -487,7 +547,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             return
         elif pc.iceConnectionState in ["failed", "disconnected", "closed"]:
             logging.info(f"ICE connection {pc.iceConnectionState}. Waiting for reconnect...")
-            
+
             # Wait up to 90 seconds.
             for i in range(90):  
                 await asyncio.sleep(1)

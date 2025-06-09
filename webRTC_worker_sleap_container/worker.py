@@ -380,6 +380,9 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
             asyncio.create_task(keep_ice_alive(channel))
             logging.info(f'{channel.label} channel is open')
+
+            start_progress_listener(channel)
+            logging.info(f'{channel.label} progress listener started')
         
         @channel.on("message")
         async def on_message(message):
@@ -468,8 +471,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                             # Start both tasks concurrently.
                             await asyncio.gather(
-                                stream_logs(),
-                                start_progress_listener(channel)
+                                stream_logs()
                             )
                             
                             await process.wait()

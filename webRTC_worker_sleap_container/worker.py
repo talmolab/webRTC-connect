@@ -13,6 +13,7 @@ import zmq
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 from websockets.client import ClientConnection
+from sleap.nn.callbacks import ProgressReporterZMQ
 
 # import sleap
 # from sleap.nn.training import main
@@ -39,7 +40,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
         None
     """
 
-    # Initialize ZMQ context, socket and event loop.
+    # Initialize socket and event loop.
     logging.info("Starting ZMQ progress listener...")
     context = zmq.Context()
     socket = context.socket(zmq.SUB)
@@ -294,6 +295,9 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         # Listen for incoming messages on the channel.
         logging.info("channel(%s) %s" % (channel.label, "created by remote party & received."))
     
+        asyncio.create_task(start_progress_listener(channel))
+        logging.info(f'{channel.label} progress listener started')
+
         async def send_worker_file(file_path: str):
             """Handles direct, one-way file transfer from client to be sent to client peer.
         
@@ -380,9 +384,6 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
             asyncio.create_task(keep_ice_alive(channel))
             logging.info(f'{channel.label} channel is open')
-
-            start_progress_listener(channel)
-            logging.info(f'{channel.label} progress listener started')
         
         @channel.on("message")
         async def on_message(message):

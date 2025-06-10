@@ -4,6 +4,7 @@ import subprocess
 import stat
 import sys
 import threading
+import jsonpickle
 import websockets
 import json
 import logging
@@ -57,7 +58,8 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
         """
         
         try:
-            return socket.recv_json(flags=zmq.NOBLOCK)
+            msg_str = socket.recv_string(flags=zmq.NOBLOCK)
+            return jsonpickle.decode(msg_str)  # or jsonpickle.decode(msg_str) if needed
         except zmq.Again:
             return None
 
@@ -71,6 +73,8 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
                     channel.send(f"PROGRESS_REPORT::{json.dumps(msg)}")
             except Exception as e:
                 logging.error(f"Failed to send ZMQ progress: {e}")
+        else: 
+            logging.info("No ZMQ message received. Waiting for next message...")
 
         # Polling interval.
         await asyncio.sleep(0.05)

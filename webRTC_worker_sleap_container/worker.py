@@ -45,7 +45,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
     logging.info("Starting ZMQ progress listener...")
     context = zmq.Context()
     socket = context.socket(zmq.SUB)
-    socket.connect(zmq_address)
+    socket.connect(zmq_address) 
     socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
     loop = asyncio.get_event_loop()
@@ -58,8 +58,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
         """
         
         try:
-            msg_str = socket.recv_string(flags=zmq.NOBLOCK)
-            return jsonpickle.decode(msg_str)  # or jsonpickle.decode(msg_str) if needed
+            return socket.recv_string(flags=zmq.NOBLOCK)  # or jsonpickle.decode(msg_str) if needed
         except zmq.Again:
             return None
 
@@ -70,7 +69,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
         if msg:
             try:
                 if channel.readyState == "open":
-                    channel.send(f"PROGRESS_REPORT::{json.dumps(msg)}")
+                    channel.send(f"PROGRESS_REPORT::{msg}")
             except Exception as e:
                 logging.error(f"Failed to send ZMQ progress: {e}")
         else: 
@@ -298,6 +297,9 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
         # Listen for incoming messages on the channel.
         logging.info("channel(%s) %s" % (channel.label, "created by remote party & received."))
+    
+        asyncio.create_task(start_progress_listener(channel))
+        logging.info(f'{channel.label} progress listener started')
 
         async def send_worker_file(file_path: str):
             """Handles direct, one-way file transfer from client to be sent to client peer.
@@ -385,10 +387,6 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
             asyncio.create_task(keep_ice_alive(channel))
             logging.info(f'{channel.label} channel is open')
-
-            asyncio.create_task(start_progress_listener(channel))
-            logging.info(f'{channel.label} progress listener started')
-            channel.send("---------progress listener started---------")
         
         @channel.on("message")
         async def on_message(message):

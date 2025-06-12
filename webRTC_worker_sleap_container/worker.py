@@ -48,7 +48,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
     socket = context.socket(zmq.SUB)
 
     logging.info(f"Connecting to ZMQ address: {zmq_address}")
-    socket.connect(zmq_address) 
+    socket.bind(zmq_address) 
     socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
     loop = asyncio.get_event_loop()
@@ -77,9 +77,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
                 logging.info("Progress report sent to client.")
             except Exception as e:
                 logging.error(f"Failed to send ZMQ progress: {e}")
-        else: 
-            logging.info("No ZMQ message received. Waiting for next message...")
-
+                
         # Polling interval.
         await asyncio.sleep(0.05)
 

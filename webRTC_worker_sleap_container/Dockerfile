@@ -31,15 +31,17 @@ RUN pip install aiortc asyncio websockets flask
 
 # Copy the sleap_webRTC directory into the image's root dir
 COPY worker.py /app/worker.py
+COPY zmq_check.py /app/zmq_check.py
 
 # Ensure executable
 RUN chmod +x /app/worker.py
+RUN chmod +x /app/zmq_check.py
 
 # Create shared file directory inside container 
 RUN mkdir -p /app/shared_data && chmod 777 /app/shared_data
 
 # Port exposed by the container, NOT computer (localhost), 8080 = websocket server, 3478 = TURN server
-EXPOSE 8080 5000 3478/udp 3478/tcp
+EXPOSE 8080 5000 3478/udp 3478/tcp 9001/tcp 9000/tcp
 
 # Signaling server -> worker -> client in sequenece
 # Worker makes req to signaling server, signaling server sends offer to client and accepts offer

@@ -4,6 +4,7 @@ import subprocess
 import stat
 import sys
 import threading
+import time
 import jsonpickle
 import websockets
 import json
@@ -45,6 +46,8 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
     logging.info("Starting ZMQ progress listener...")
     context = zmq.Context()
     socket = context.socket(zmq.SUB)
+
+    logging.info(f"Connecting to ZMQ address: {zmq_address}")
     socket.connect(zmq_address) 
     socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
@@ -58,6 +61,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
         """
         
         try:
+            logging.info("Receiving message from ZMQ...")
             return socket.recv_string(flags=zmq.NOBLOCK)  # or jsonpickle.decode(msg_str) if needed
         except zmq.Again:
             return None
@@ -68,8 +72,9 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
 
         if msg:
             try:
-                if channel.readyState == "open":
-                    channel.send(f"PROGRESS_REPORT::{msg}")
+                logging.info(f"Sending progress report to client: {msg}")
+                channel.send(f"PROGRESS_REPORT::{msg}")
+                logging.info("Progress report sent to client.")
             except Exception as e:
                 logging.error(f"Failed to send ZMQ progress: {e}")
         else: 
@@ -298,9 +303,6 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         # Listen for incoming messages on the channel.
         logging.info("channel(%s) %s" % (channel.label, "created by remote party & received."))
     
-        asyncio.create_task(start_progress_listener(channel))
-        logging.info(f'{channel.label} progress listener started')
-
         async def send_worker_file(file_path: str):
             """Handles direct, one-way file transfer from client to be sent to client peer.
         
@@ -433,6 +435,13 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                     if os.path.exists(train_script_path):
                         try:
+                            # Start ZMQ progress listener.
+                            progress_listener_task = asyncio.create_task(start_progress_listener(channel))
+                            logging.info(f'{channel.label} progress listener started')
+                            
+                            # Give SUB socket time to connect.
+                            await asyncio.sleep(1)
+
                             logging.info(f"Running training script: {train_script_path}")
 
                             # # Run training script directly with main.
@@ -473,14 +482,12 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                                         except Exception as e:
                                             logging.error(f"Failed to send log line: {e}")
 
-                            # Start both tasks concurrently.
-                            await asyncio.gather(
-                                stream_logs()
-                            )
-                            
+                            # Run log streaming and wait for process to finish
+                            await stream_logs()
                             await process.wait()
 
                             logging.info("Training completed successfully.")
+                            progress_listener_task.cancel()
                             logging.info("Zipping results...")
 
                             # Zip the results.

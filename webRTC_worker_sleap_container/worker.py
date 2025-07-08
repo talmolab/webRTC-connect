@@ -7,9 +7,14 @@ import json
 import logging
 import shutil
 import os
+import zmq
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 from websockets.client import ClientConnection
+from pathlib import Path
+
+# import sleap
+# from sleap.nn.training import main
 
 # Setup logging.
 logging.basicConfig(level=logging.INFO)
@@ -21,10 +26,83 @@ SAVE_DIR = "/app/shared_data"
 # Global variables.
 received_files = {}
 output_dir = ""
+ctrl_socket = None
+
+def start_zmq_control(zmq_address: str = "tcp://127.0.0.1:9000"):
+    """Starts a ZMQ control PUB socket to send ZMQ commands to the Trainer.
+   
+    Args:
+        zmq_address: Address of the ZMQ socket to connect to.
+    Returns:
+        None
+    """
+    global ctrl_socket
+
+    # Initialize socket and event loop.
+    logging.info("Starting ZMQ control socket...")
+    context = zmq.Context()
+    socket = context.socket(zmq.PUB)
+
+    logging.info(f"Connecting to ZMQ address: {zmq_address}")
+    socket.bind(zmq_address)
+
+    # set global PUB socket for use in other functions
+    ctrl_socket = socket
+    logging.info("ZMQ control socket initialized.")
+
+
+async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "tcp://127.0.0.1:9001"):
+    """Starts a listener for ZMQ messages and sends progress updates to the client over the data channel.
+   
+    Args:
+        channel: DataChannel object to send progress updates.
+        zmq_address: Address of the ZMQ socket to connect to.
+    Returns:
+        None
+    """
+
+    # Initialize socket and event loop.
+    logging.info("Starting ZMQ progress listener...")
+    context = zmq.Context()
+    socket = context.socket(zmq.SUB)
+
+    logging.info(f"Connecting to ZMQ address: {zmq_address}")
+    socket.bind(zmq_address) 
+    socket.setsockopt_string(zmq.SUBSCRIBE, "")
+
+    loop = asyncio.get_event_loop()
+
+    def recv_msg():
+        """Receives a message from the ZMQ socket in a non-blocking way.
+        
+        Returns:
+            The received message as a JSON object, or None if no message is available.
+        """
+        
+        try:
+            logging.info("Receiving message from ZMQ...")
+            return socket.recv_string(flags=zmq.NOBLOCK)  # or jsonpickle.decode(msg_str) if needed
+        except zmq.Again:
+            return None
+
+    while True:
+        # Send progress as JSON string with prefix.
+        msg = await loop.run_in_executor(None, recv_msg)
+
+        if msg:
+            try:
+                logging.info(f"Sending progress report to client: {msg}")
+                channel.send(f"PROGRESS_REPORT::{msg}")
+                logging.info("Progress report sent to client.")
+            except Exception as e:
+                logging.error(f"Failed to send ZMQ progress: {e}")
+                
+        # Polling interval.
+        await asyncio.sleep(0.05)
+
 
 async def zip_results(file_name: str, dir_path: str):
-    """
-    Zips the contents of the shared_data directory and saves it to a zip file.
+    """Zips the contents of the shared_data directory and saves it to a zip file.
 
     Args:
         file_name: Name of the zip file to be created.
@@ -34,7 +112,7 @@ async def zip_results(file_name: str, dir_path: str):
     """
 
     logging.info("Zipping results...")
-    if os.path.exists(dir_path):
+    if Path(dir_path):
         try:
             shutil.make_archive(file_name.split(".")[0], 'zip', dir_path)
             logging.info(f"Results zipped to {file_name}")
@@ -47,8 +125,7 @@ async def zip_results(file_name: str, dir_path: str):
 
 
 async def unzip_results(file_path: str):
-    """
-    Unzips the contents of the given file path.
+    """Unzips the contents of the given file path.
 
     Args:
         file_path: Path to the zip file to be unzipped.
@@ -57,7 +134,7 @@ async def unzip_results(file_path: str):
     """
 
     logging.info("Unzipping results...")
-    if os.path.exists(file_path):
+    if Path(file_path):
         try:
             shutil.unpack_archive(file_path, SAVE_DIR)
             logging.info(f"Results unzipped from {file_path}")
@@ -70,8 +147,7 @@ async def unzip_results(file_path: str):
     
 
 async def clean_exit(pc: RTCPeerConnection, websocket: ClientConnection):
-    """ 
-    Handles cleanup and shutdown of the worker.
+    """Handles cleanup and shutdown of the worker.
 
     Args:
         pc: RTCPeerConnection object
@@ -90,9 +166,7 @@ async def clean_exit(pc: RTCPeerConnection, websocket: ClientConnection):
 
 
 async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
-    """
-    Handles typed messages from worker to be sent to client peer.
-	Additionally, prompts for file upload to be sent to client.
+    """Handles typed messages from worker to be sent to client peer.
 
     Args:
         None
@@ -122,7 +196,7 @@ async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
             logging.info("Quitting...")
             await pc.close()
             return
-        if not os.path.exists(file_path):
+        if not Path(file_path):
             logging.info("File does not exist.")
             return
         else:
@@ -152,8 +226,7 @@ async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
 
 
 async def handle_connection(pc: RTCPeerConnection, websocket: ClientConnection):
-    """ 
-    Handles incoming messages from the signaling server and processes them accordingly.
+    """ Handles incoming messages from the signaling server and processes them accordingly.
 
     Args:
         pc: RTCPeerConnection object
@@ -206,9 +279,7 @@ async def handle_connection(pc: RTCPeerConnection, websocket: ClientConnection):
 
         
 async def run_worker(pc, peer_id: str, DNS: str, port_number):
-    """
-    Main function to run the worker. Contains several event handlers for the WebRTC 
-    connection and data channel.
+    """Main function to run the worker. Contains several event handlers for the WebRTC connection and data channel.
     
     Args:
         pc: RTCPeerConnection object
@@ -220,8 +291,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
     """
 
     async def keep_ice_alive(channel: RTCDataChannel):
-        """ 
-        Sends periodic keep-alive messages to the client to maintain the connection.
+        """Sends periodic keep-alive messages to the client to maintain the connection.
         
         Args:
             channel: DataChannel object
@@ -237,14 +307,13 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
     # Websockets are only necessary here for setting up exchange of SDP & ICE candidates to each other.
     # Listen for incoming data channel messages on channel established by the client.
-    @pc.on("datachannel")
+    @pc.on("datachannel")           
     def on_datachannel(channel: RTCDataChannel):
-        """ 
-        Handles incoming data channel messages from the client.
+        """Handles incoming data channel messages from the client.
 
         Args:
             channel: DataChannel object
-        Returns:
+        Returns: 
             None
         """
 
@@ -252,8 +321,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         logging.info("channel(%s) %s" % (channel.label, "created by remote party & received."))
     
         async def send_worker_file(file_path: str):
-            """
-            Handles direct, one-way file transfer from client to be sent to client peer.
+            """Handles direct, one-way file transfer from client to be sent to client peer.
         
             Args:
                 file_path: Path to the file to be sent.
@@ -269,7 +337,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             if not file_path:
                 logging.info("No file path entered.")
                 return
-            if not os.path.exists(file_path):
+            if not Path(file_path):
                 logging.info("File does not exist.")
                 return
             else: 
@@ -300,8 +368,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
-            """
-            Logs the ICE connection state and handles connection state changes.
+            """Logs the ICE connection state and handles connection state changes.
 
             Args:
                 None
@@ -329,8 +396,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             
         @channel.on("open")
         def on_channel_open():
-            """
-            Logs the channel open event.
+            """Logs the channel open event.
 
             Args:
                 None
@@ -343,8 +409,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
         
         @channel.on("message")
         async def on_message(message):
-            """
-            Handles incoming messages from the client.
+            """Handles incoming messages from the client.
 
             Args:
                 message: The message received from the client (can be string or bytes)
@@ -358,6 +423,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             # Global received_files dictionary.
             global received_files
             global output_dir
+            global ctrl_socket
             
             if isinstance(message, str):
                 if message == b"KEEP_ALIVE":
@@ -385,8 +451,19 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                     train_script_path = os.path.join(SAVE_DIR, "train-script.sh")
 
-                    if os.path.exists(train_script_path):
+                    if Path(train_script_path):
                         try:
+                            # Start ZMQ progress listener.
+                            progress_listener_task = asyncio.create_task(start_progress_listener(channel))
+                            logging.info(f'{channel.label} progress listener started')
+
+                            # Start ZMQ control socket.
+                            start_zmq_control()
+                            logging.info(f'{channel.label} ZMQ control socket started')
+                            
+                            # Give SUB socket time to connect.
+                            await asyncio.sleep(1)
+
                             logging.info(f"Running training script: {train_script_path}")
 
                             # Make the script executable
@@ -401,19 +478,24 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                             )
 
                             assert process.stdout is not None
-                            async for line in process.stdout:
-                                decoded_line = line.decode().rstrip()
-                                logging.info(decoded_line)
-
-                                if channel.readyState == "open":
-                                    try:
-                                        channel.send(f"TRAIN_LOG:{decoded_line}")
-                                    except Exception as e:
-                                        logging.error(f"Failed to send log line: {e}")
                             
+                            async def stream_logs():
+                                async for line in process.stdout:
+                                    decoded_line = line.decode().rstrip()
+                                    logging.info(decoded_line)
+
+                                    if channel.readyState == "open":
+                                        try:
+                                            channel.send(f"TRAIN_LOG:{decoded_line}")
+                                        except Exception as e:
+                                            logging.error(f"Failed to send log line: {e}")
+
+                            # Run log streaming and wait for process to finish
+                            await stream_logs()
                             await process.wait()
 
                             logging.info("Training completed successfully.")
+                            progress_listener_task.cancel()
                             logging.info("Zipping results...")
 
                             # Zip the results.
@@ -441,6 +523,17 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                     received_files[file_name] = bytearray()
                     logging.info(f"File name received: {file_name}, of size {file_size}")
+                elif "ZMQ_CTRL::" in message:
+                    logging.info(f"ZMQ control message received: {message}")
+                    _, zmq_msg = message.split("ZMQ_CTRL::", 1)
+                    
+                    # ProgressListenerZMQ listens on zmq_address, send updates there.
+                    # Should be either stop or cancel training cmd.
+                    if ctrl_socket != None:
+                        ctrl_socket.send_string(zmq_msg)
+                    else:
+                        logging.error(f"ZMQ control socket not initialized {ctrl_socket}. Cannot send control message.")
+                    
                 else:
                     logging.info(f"Client sent: {message}")
                     await send_worker_messages(channel, pc, websocket)
@@ -468,8 +561,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
-        """ 
-        Handles ICE connection state changes.
+        """Handles ICE connection state changes.
 
         Args:
             None
@@ -487,7 +579,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             return
         elif pc.iceConnectionState in ["failed", "disconnected", "closed"]:
             logging.info(f"ICE connection {pc.iceConnectionState}. Waiting for reconnect...")
-            
+
             # Wait up to 90 seconds.
             for i in range(90):  
                 await asyncio.sleep(1)

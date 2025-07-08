@@ -1,11 +1,7 @@
 import asyncio
-import shlex
 import subprocess
 import stat
 import sys
-import threading
-import time
-import jsonpickle
 import websockets
 import json
 import logging
@@ -15,7 +11,7 @@ import zmq
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 from websockets.client import ClientConnection
-from sleap.nn.callbacks import ProgressReporterZMQ
+from pathlib import Path
 
 # import sleap
 # from sleap.nn.training import main
@@ -32,9 +28,8 @@ received_files = {}
 output_dir = ""
 ctrl_socket = None
 
-# CONTROLLER ZMQ PORT IS 9000 NOT 9001
 def start_zmq_control(zmq_address: str = "tcp://127.0.0.1:9000"):
-    """Starts a ZMQ control socket to send messages to the client over the data channel.
+    """Starts a ZMQ control PUB socket to send ZMQ commands to the Trainer.
    
     Args:
         zmq_address: Address of the ZMQ socket to connect to.
@@ -117,7 +112,7 @@ async def zip_results(file_name: str, dir_path: str):
     """
 
     logging.info("Zipping results...")
-    if os.path.exists(dir_path):
+    if Path(dir_path):
         try:
             shutil.make_archive(file_name.split(".")[0], 'zip', dir_path)
             logging.info(f"Results zipped to {file_name}")
@@ -139,7 +134,7 @@ async def unzip_results(file_path: str):
     """
 
     logging.info("Unzipping results...")
-    if os.path.exists(file_path):
+    if Path(file_path):
         try:
             shutil.unpack_archive(file_path, SAVE_DIR)
             logging.info(f"Results unzipped from {file_path}")
@@ -201,7 +196,7 @@ async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
             logging.info("Quitting...")
             await pc.close()
             return
-        if not os.path.exists(file_path):
+        if not Path(file_path):
             logging.info("File does not exist.")
             return
         else:
@@ -342,7 +337,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             if not file_path:
                 logging.info("No file path entered.")
                 return
-            if not os.path.exists(file_path):
+            if not Path(file_path):
                 logging.info("File does not exist.")
                 return
             else: 
@@ -456,7 +451,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                     train_script_path = os.path.join(SAVE_DIR, "train-script.sh")
 
-                    if os.path.exists(train_script_path):
+                    if Path(train_script_path):
                         try:
                             # Start ZMQ progress listener.
                             progress_listener_task = asyncio.create_task(start_progress_listener(channel))
@@ -470,20 +465,6 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                             await asyncio.sleep(1)
 
                             logging.info(f"Running training script: {train_script_path}")
-
-                            # # Run training script directly with main.
-                            # args = []
-                            # with open(train_script_path, "r") as f:
-                            #     for line in f:
-                            #         line = line.strip()
-                            #         if line.startswith("#!"):
-                            #             continue
-                            #         parts = shlex.split(line)
-                            #         if parts and parts[0] == "sleap-train" and len(parts) >= 3:
-                            #             config, labels = parts[-2], parts[-1]
-                            #             args.append((config, labels))
-
-                            # main(args, )
 
                             # Make the script executable
                             os.chmod(train_script_path, os.stat(train_script_path).st_mode | stat.S_IEXEC)

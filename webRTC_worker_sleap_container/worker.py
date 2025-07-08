@@ -30,6 +30,30 @@ SAVE_DIR = "/app/shared_data"
 # Global variables.
 received_files = {}
 output_dir = ""
+ctrl_socket = None
+
+# CONTROLLER ZMQ PORT IS 9000 NOT 9001
+def start_zmq_control(zmq_address: str = "tcp://127.0.0.1:9000"):
+    """Starts a ZMQ control socket to send messages to the client over the data channel.
+   
+    Args:
+        zmq_address: Address of the ZMQ socket to connect to.
+    Returns:
+        None
+    """
+    global ctrl_socket
+
+    # Initialize socket and event loop.
+    logging.info("Starting ZMQ control socket...")
+    context = zmq.Context()
+    socket = context.socket(zmq.PUB)
+
+    logging.info(f"Connecting to ZMQ address: {zmq_address}")
+    socket.bind(zmq_address) 
+
+    # set global PUB socket for use in other functions
+    ctrl_socket = socket
+    logging.info("ZMQ control socket initialized.")
 
 
 async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "tcp://127.0.0.1:9001"):
@@ -404,6 +428,7 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
             # Global received_files dictionary.
             global received_files
             global output_dir
+            global ctrl_socket
             
             if isinstance(message, str):
                 if message == b"KEEP_ALIVE":
@@ -436,6 +461,10 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                             # Start ZMQ progress listener.
                             progress_listener_task = asyncio.create_task(start_progress_listener(channel))
                             logging.info(f'{channel.label} progress listener started')
+
+                            # Start ZMQ control socket.
+                            start_zmq_control()
+                            logging.info(f'{channel.label} ZMQ control socket started')
                             
                             # Give SUB socket time to connect.
                             await asyncio.sleep(1)
@@ -513,6 +542,17 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
 
                     received_files[file_name] = bytearray()
                     logging.info(f"File name received: {file_name}, of size {file_size}")
+                elif "ZMQ_CTRL::" in message:
+                    logging.info(f"ZMQ control message received: {message}")
+                    _, zmq_msg = message.split("ZMQ_CTRL::", 1)
+                    
+                    # ProgressListenerZMQ listens on zmq_address, send updates there.
+                    # Should be either stop or cancel training cmd.
+                    if ctrl_socket != None:
+                        ctrl_socket.send_string(zmq_msg)
+                    else:
+                        logging.error(f"ZMQ control socket not initialized {ctrl_socket}. Cannot send control message.")
+                    
                 else:
                     logging.info(f"Client sent: {message}")
                     await send_worker_messages(channel, pc, websocket)

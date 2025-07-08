@@ -50,6 +50,7 @@ def start_zmq_control(zmq_address: str = "tcp://127.0.0.1:9000"):
 
     logging.info(f"Connecting to ZMQ address: {zmq_address}")
     socket.bind(zmq_address) 
+    socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
     # set global PUB socket for use in other functions
     ctrl_socket = socket

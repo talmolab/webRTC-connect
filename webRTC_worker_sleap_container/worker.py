@@ -80,7 +80,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
         """
         
         try:
-            logging.info("Receiving message from ZMQ...")
+            # logging.info("Receiving message from ZMQ...")
             return socket.recv_string(flags=zmq.NOBLOCK)  # or jsonpickle.decode(msg_str) if needed
         except zmq.Again:
             return None
@@ -93,7 +93,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
             try:
                 logging.info(f"Sending progress report to client: {msg}")
                 channel.send(f"PROGRESS_REPORT::{msg}")
-                logging.info("Progress report sent to client.")
+                # logging.info("Progress report sent to client.")
             except Exception as e:
                 logging.error(f"Failed to send ZMQ progress: {e}")
                 
@@ -101,7 +101,7 @@ async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "t
         await asyncio.sleep(0.05)
 
 
-async def zip_results(file_name: str, dir_path: str):
+async def zip_results(file_name: str, dir_path: str = SAVE_DIR):
     """Zips the contents of the shared_data directory and saves it to a zip file.
 
     Args:
@@ -534,6 +534,8 @@ async def run_worker(pc, peer_id: str, DNS: str, port_number):
                     else:
                         logging.error(f"ZMQ control socket not initialized {ctrl_socket}. Cannot send control message.")
                     
+                    # Update the client with the control message.
+                    channel.send(f"ZMQ_CTRL::{zmq_msg}")
                 else:
                     logging.info(f"Client sent: {message}")
                     await send_worker_messages(channel, pc, websocket)

@@ -15,6 +15,9 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
 from pathlib import Path
 from websockets.client import ClientConnection
 
+# Setup logging.
+logging.basicConfig(level=logging.INFO)
+
 class RTCWorkerClient:
     def __init__(self, remote_save_dir="/app/shared_data", chunk_size=32 * 1024):
         self.save_dir = remote_save_dir
@@ -638,12 +641,17 @@ if __name__ == "__main__":
     pc = RTCPeerConnection()
 
     # Run the worker 
-    asyncio.run(
-        worker.run_worker(
-            pc=pc,
-            peer_id="worker1",
-            DNS="ws://ec2-54-176-92-10.us-west-1.compute.amazonaws.com",
-            port_number=8080
+    try:
+        asyncio.run(
+            worker.run_worker(
+                pc=pc,
+                peer_id="worker1",
+                DNS="ws://ec2-54-176-92-10.us-west-1.compute.amazonaws.com",
+                port_number=8080
+            )
         )
-    )
+    except KeyboardInterrupt:
+        logging.info("Worker interrupted by user. Shutting down...")
+    finally:
+        logging.info("Worker exiting...")
 

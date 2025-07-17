@@ -28,7 +28,7 @@ class RTCWorkerClient:
         self.pc = None  # RTCPeerConnection will be set later
         self.websocket = None  # WebSocket connection will be set later
 
-    def parse_training_script(training_script_path: str):
+    def parse_training_script(self, training_script_path: str):
         jobs = []
         pattern = re.compile(r"^\s*sleap-train\s+([^\s]+)\s+([^\s]+)")
 
@@ -136,7 +136,7 @@ class RTCWorkerClient:
         self.ctrl_socket = socket
         logging.info("ZMQ control socket initialized.")
 
-    async def start_progress_listener(channel: RTCDataChannel, zmq_address: str = "tcp://127.0.0.1:9001"):
+    async def start_progress_listener(self, channel: RTCDataChannel, zmq_address: str = "tcp://127.0.0.1:9001"):
         """Starts a listener for ZMQ messages and sends progress updates to the client over the data channel.
     
         Args:
@@ -185,7 +185,7 @@ class RTCWorkerClient:
             # Polling interval.
             await asyncio.sleep(0.05)
 
-    async def zip_results(file_name: str, dir_path: str = None):
+    async def zip_results(self, file_name: str, dir_path: str = None):
         """Zips the contents of the shared_data directory and saves it to a zip file.
 
         Args:
@@ -210,7 +210,7 @@ class RTCWorkerClient:
             logging.info(f"{dir_path} does not exist!")
             return
 
-    async def unzip_results(file_path: str, dir_path: str = None):
+    async def unzip_results(self, file_path: str, dir_path: str = None):
         """Unzips the contents of the given file path.
 
         Args:
@@ -234,7 +234,7 @@ class RTCWorkerClient:
             logging.info(f"{file_path} does not exist!")
             return
         
-    async def clean_exit(pc: RTCPeerConnection, websocket: ClientConnection):
+    async def clean_exit(self, pc: RTCPeerConnection, websocket: ClientConnection):
         """Handles cleanup and shutdown of the worker.
 
         Args:
@@ -252,7 +252,7 @@ class RTCWorkerClient:
 
         logging.info("Client shutdown complete. Exiting...")
 
-    async def send_worker_messages(pc: RTCPeerConnection, channel: RTCDataChannel):
+    async def send_worker_messages(self, pc: RTCPeerConnection, channel: RTCDataChannel):
         """Handles typed messages from worker to be sent to client peer.
 
         Args:
@@ -363,7 +363,7 @@ class RTCWorkerClient:
         except Exception as e:
             logging.ERROR(f"Error handling message: {e}")
 
-    async def keep_ice_alive(channel: RTCDataChannel):
+    async def keep_ice_alive(self, channel: RTCDataChannel):
         """Sends periodic keep-alive messages to the client to maintain the connection.
         
         Args:

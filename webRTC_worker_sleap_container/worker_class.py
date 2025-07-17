@@ -606,19 +606,23 @@ class RTCWorkerClient:
         """
 
         # Register PeerConnection functions with PC object.
+        logging.info(f"Registering PeerConnection functions for {peer_id}...")
         pc.on("datachannel", self.on_datachannel)
         pc.on("iceconnectionstatechange", self.on_iceconnectionstatechange)
 
         # Set the RTCPeerConnection object for the worker.
+        logging.info(f"Setting RTCPeerConnection for {peer_id}...")
         self.pc = pc
 
         # Establish a WebSocket connection to the signaling server.
+        logging.info(f"Connecting to signaling server at {DNS}:{port_number}...")
         async with websockets.connect(f"{DNS}:{port_number}") as websocket:
 
             # Set the WebSocket connection for the worker.
             self.websocket = websocket
 
             # Register the worker with the server.
+            logging.info(f"Registering {peer_id} with signaling server...")
             await websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
             logging.info(f"{peer_id} sent to signaling server for registration!")
 
@@ -636,8 +640,8 @@ if __name__ == "__main__":
     # Run the worker 
     asyncio.run(
         worker.run_worker(
-            pc,
-            peer_id="worker_1",
+            pc=pc,
+            peer_id="worker1",
             DNS="ws://ec2-54-176-92-10.us-west-1.compute.amazonaws.com",
             port_number=8080
         )

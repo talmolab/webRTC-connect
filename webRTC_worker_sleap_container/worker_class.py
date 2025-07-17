@@ -536,3 +536,21 @@ class RTCWorkerClient:
             # Handle incoming messages from server (e.g. answers).
             await self.handle_connection(pc, websocket)
             logging.info(f"{peer_id} connected with client!")
+
+if __name__ == "__main__":
+    # Create the worker instance.
+    worker = RTCWorkerClient()
+
+    # Create the RTCPeerConnection object.
+    pc = RTCPeerConnection()
+
+    # Run the worker 
+    asyncio.run(
+        worker.run_worker(
+            pc,
+            peer_id="worker_1",
+            DNS="ws://ec2-54-176-92-10.us-west-1.compute.amazonaws.com",
+            port_number=8080
+        )
+    )
+

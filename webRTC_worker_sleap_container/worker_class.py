@@ -234,7 +234,7 @@ class RTCWorkerClient:
             logging.info(f"{file_path} does not exist!")
             return
         
-    async def clean_exit(self, pc: RTCPeerConnection, websocket: ClientConnection):
+    async def clean_exit(self):
         """Handles cleanup and shutdown of the worker.
 
         Args:
@@ -245,10 +245,10 @@ class RTCWorkerClient:
         """
 
         logging.info("Closing WebRTC connection...") 
-        await pc.close()
+        await self.pc.close()
 
         logging.info("Closing websocket connection...")
-        await websocket.close()
+        await self.websocket.close()
 
         logging.info("Client shutdown complete. Exiting...")
 
@@ -290,7 +290,7 @@ class RTCWorkerClient:
                 logging.info(f"Sending {file_path} to client...")
                 file_name = os.path.basename(file_path)
                 file_size = os.path.getsize(file_path)
-                file_save_dir = output_dir 
+                file_save_dir = self.output_dir 
                 
                 # Send metadata first
                 channel.send(f"FILE_META::{file_name}:{file_size}:{file_save_dir}")
@@ -298,7 +298,7 @@ class RTCWorkerClient:
                 # Send file in chunks (32 KB)
                 with open(file_path, "rb") as file:
                     logging.info(f"File opened: {file_path}")
-                    while chunk := file.read(CHUNK_SIZE):
+                    while chunk := file.read(self.CHUNK_SIZE):
                         channel.send(chunk)
                 
                 channel.send("END_OF_FILE")
@@ -321,8 +321,15 @@ class RTCWorkerClient:
             None    
         """
 
+        if websocket is None:
+            logging.info("Given websocket is None. Using self.websocket instead.")
+
+        if pc is None:
+            logging.info("Given PeerConnection object is None. Using self.pc instead.")
+ 
+
         try:
-            async for message in websocket:
+            async for message in self.websocket:
                 data = json.loads(message)
 
                 # Receive offer SDP from client (forwarded by signaling server).
@@ -330,13 +337,13 @@ class RTCWorkerClient:
                     logging.info('Received offer SDP')
 
                     # Set worker peer's remote description to the client's offer based on sdp data
-                    await pc.setRemoteDescription(RTCSessionDescription(sdp=data.get('sdp'), type='offer')) 
+                    await self.pc.setRemoteDescription(RTCSessionDescription(sdp=data.get('sdp'), type='offer')) 
                     
                     # Generate worker's answer SDP and set it as the local description
-                    await pc.setLocalDescription(await pc.createAnswer())
-                    
+                    await self.pc.setLocalDescription(await self.pc.createAnswer())
+
                     # Send worker's answer SDP to client so they can set it as their remote description
-                    await websocket.send(json.dumps({'type': pc.localDescription.type, 'target': data.get('target'), 'sdp': pc.localDescription.sdp}))
+                    await self.websocket.send(json.dumps({'type': self.pc.localDescription.type, 'target': data.get('target'), 'sdp': self.pc.localDescription.sdp}))
 
                     # Reset received_files dictionary
                     self.received_files.clear()
@@ -349,7 +356,7 @@ class RTCWorkerClient:
 
                 elif data.get('type') == 'quit': # NOT initiator, received quit request from worker
                     print("Received quit request from Client. Closing connection...")
-                    await self.clean_exit(pc, websocket)
+                    await self.clean_exit()
                     return
 
                 # Error handling
@@ -524,7 +531,7 @@ class RTCWorkerClient:
 
                         except subprocess.CalledProcessError as e:
                             logging.error(f"Training failed with error:\n{e.stderr}")
-                            await self.clean_exit(self.pc, self.websocket)
+                            await self.clean_exit()
                     else:
                         logging.info(f"No training script found in {self.save_dir}. Skipping training.")
 
@@ -579,7 +586,7 @@ class RTCWorkerClient:
         # Check the ICE connection state and handle accordingly.
         if self.pc.iceConnectionState == "failed":
             logging.ERROR('ICE connection failed')
-            await self.clean_exit(self.pc, self.websocket)
+            await self.clean_exit()
             return
         elif self.pc.iceConnectionState in ["failed", "disconnected", "closed"]:
             logging.info(f"ICE connection {self.pc.iceConnectionState}. Waiting for reconnect...")
@@ -592,9 +599,12 @@ class RTCWorkerClient:
                     return
 
             logging.error("Reconnection timed out. Closing connection.")
-            await self.clean_exit(self.pc, self.websocket)
+            await self.clean_exit()
+        elif self.pc.iceConnectionState == "checking":
+            logging.info("ICE connection is checking...")
+            
         else:
-            await self.clean_exit(self.pc, self.websocket)
+            await self.clean_exit()
 
     async def run_worker(self, pc, peer_id: str, DNS: str, port_number):
         """Main function to run the worker. Contains several event handlers for the WebRTC connection and data channel.
@@ -608,14 +618,14 @@ class RTCWorkerClient:
             None
         """
 
-        # Register PeerConnection functions with PC object.
-        logging.info(f"Registering PeerConnection functions for {peer_id}...")
-        pc.on("datachannel", self.on_datachannel)
-        pc.on("iceconnectionstatechange", self.on_iceconnectionstatechange)
-
         # Set the RTCPeerConnection object for the worker.
         logging.info(f"Setting RTCPeerConnection for {peer_id}...")
         self.pc = pc
+
+        # Register PeerConnection functions with PC object.
+        logging.info(f"Registering PeerConnection functions for {peer_id}...")
+        self.pc.on("datachannel", self.on_datachannel)
+        self.pc.on("iceconnectionstatechange", self.on_iceconnectionstatechange)
 
         # Establish a WebSocket connection to the signaling server.
         logging.info(f"Connecting to signaling server at {DNS}:{port_number}...")
@@ -626,11 +636,11 @@ class RTCWorkerClient:
 
             # Register the worker with the server.
             logging.info(f"Registering {peer_id} with signaling server...")
-            await websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
+            await self.websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
             logging.info(f"{peer_id} sent to signaling server for registration!")
 
             # Handle incoming messages from server (e.g. answers).
-            await self.handle_connection(pc, websocket)
+            await self.handle_connection(self.pc, self.websocket)
             logging.info(f"{peer_id} connected with client!")
 
 if __name__ == "__main__":

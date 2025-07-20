@@ -424,7 +424,7 @@ class RTCWorkerClient:
                 # Obtain metadata.
                 file_name = os.path.basename(file_path)
                 file_size = os.path.getsize(file_path)
-                file_save_dir = output_dir
+                file_save_dir = self.output_dir
                 
                 # Send metadata first.
                 channel.send(f"FILE_META::{file_name}:{file_size}:{file_save_dir}")
@@ -600,11 +600,10 @@ class RTCWorkerClient:
 
             logging.error("Reconnection timed out. Closing connection.")
             await self.clean_exit()
+            
         elif self.pc.iceConnectionState == "checking":
             logging.info("ICE connection is checking...")
             
-        else:
-            await self.clean_exit()
 
     async def run_worker(self, pc, peer_id: str, DNS: str, port_number):
         """Main function to run the worker. Contains several event handlers for the WebRTC connection and data channel.

@@ -523,7 +523,7 @@ class RTCWorkerClient:
                             # Zip the results.
                             logging.info("Zipping results...")
                             zipped_file_name = f"trained_{file_name}"
-                            await self.zip_results(zipped_file_name, f"{self.save_dir}/{output_dir}")
+                            await self.zip_results(zipped_file_name, f"{self.save_dir}/{self.output_dir}") # normally, "/app/shared_data/models"
 
                             # Send the zipped file to the client.
                             logging.info(f"Sending zipped file to client: {zipped_file_name}")
@@ -537,7 +537,7 @@ class RTCWorkerClient:
 
                 elif "OUTPUT_DIR::" in message:
                     logging.info(f"Output directory received: {message}")
-                    _, output_dir = message.split("OUTPUT_DIR::", 1)
+                    _, self.output_dir = message.split("OUTPUT_DIR::", 1) # normally, "models"
 
                 elif "FILE_META::" in message:
                     logging.info(f"File metadata received: {message}")

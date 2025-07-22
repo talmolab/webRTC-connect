@@ -479,7 +479,7 @@ class RTCWorkerClient:
 
                     # File transfer complete, save to disk.
                     file_name, file_data = list(self.received_files.items())[0]
-                    file_path = os.path.join(self.output_dir, file_name)
+                    file_path = os.path.join("", file_name)
 
                     with open(file_path, "wb") as file:
                         file.write(file_data)

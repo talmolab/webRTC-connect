@@ -1,13 +1,16 @@
 import asyncio
+import base64
 import subprocess
 import stat
 import sys
+import uuid
 import websockets
 import json
 import logging
 import shutil
 import os
 import re
+import requests
 import zmq
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel
@@ -27,6 +30,53 @@ class RTCWorkerClient:
         self.ctrl_socket = None
         self.pc = None  # RTCPeerConnection will be set later
         self.websocket = None  # WebSocket connection will be set later
+
+
+    def generate_session_string(room_id: str, token: str, peer_id: str):
+        """Generates an encoded session string for the room."""
+        session_data = {
+            "r": room_id, 
+            "t": token, 
+            "p": peer_id 
+        }
+        encoded = base64.urlsafe_b64encode(json.dumps(session_data).encode()).decode()
+
+        return f"sleap-session:{encoded}"
+
+
+    def request_create_room(self, id_token: str):
+        """Requests the signaling server to create a room and returns the room ID and token.
+
+        Args:
+            id_token (str): Firebase ID token for authentication.
+        Returns:
+            dict: Contains room_id and token if successful, otherwise raises an exception.
+        """
+        
+        # Port 8001 for server_routes.py
+        url = "http://ec2-54-176-92-10.us-west-1.compute.amazonaws.com:8001/create-room"
+        headers = {"Authorization": f"Bearer {id_token}"}
+
+        response = requests.post(url, headers=headers)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logging.error(f"Failed to create room: {response.status_code} - {response.text}")
+            raise Exception("Failed to create room")
+
+
+    def firebase_anonymous_signin(self):
+        """Signs in anonymously with Firebase and returns the ID token."""
+
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={os.environ.get('FIREBASE_API_KEY')}"
+        r = requests.post(url, json={"returnSecureToken": True})
+        if r.status_code == 200:
+            return r.json()
+        else:
+            logging.error(f"Failed to sign in anonymously: {r.status_code}")
+            return None
+
 
     def parse_training_script(self, training_script_path: str):
         jobs = []
@@ -311,12 +361,13 @@ class RTCWorkerClient:
             channel.send(message)
             logging.info(f"Message sent to client.")
 
-    async def handle_connection(self, pc: RTCPeerConnection, websocket: ClientConnection):
+    async def handle_connection(self, pc: RTCPeerConnection, websocket: ClientConnection, peer_id: str):
         """ Handles incoming messages from the signaling server and processes them accordingly.
 
         Args:
             pc: RTCPeerConnection object
             websocket: WebSocket connection object
+            peer_id: The ID of the peer
         Returns:
             None    
         """
@@ -331,10 +382,14 @@ class RTCWorkerClient:
         try:
             async for message in self.websocket:
                 data = json.loads(message)
+                msg_type = data.get('type')
 
                 # Receive offer SDP from client (forwarded by signaling server).
-                if data.get('type') == "offer":
+                if msg_type == "offer":
                     logging.info('Received offer SDP')
+
+                    # Obtain the sender's peer ID (this is the new target)
+                    target_pid = data.get('sender')
 
                     # Set worker peer's remote description to the client's offer based on sdp data
                     await self.pc.setRemoteDescription(RTCSessionDescription(sdp=data.get('sdp'), type='offer')) 
@@ -343,18 +398,38 @@ class RTCWorkerClient:
                     await self.pc.setLocalDescription(await self.pc.createAnswer())
 
                     # Send worker's answer SDP to client so they can set it as their remote description
-                    await self.websocket.send(json.dumps({'type': self.pc.localDescription.type, 'target': data.get('target'), 'sdp': self.pc.localDescription.sdp}))
+                    await self.websocket.send(json.dumps({
+                        'type': self.pc.localDescription.type, # 'answer'
+                        'sender': peer_id, # worker's peer ID
+                        'target': target_pid, # client's peer ID
+                        'sdp': self.pc.localDescription.sdp # worker's answer SDP
+                    }))
 
                     # Reset received_files dictionary
                     self.received_files.clear()
-                
+
+                elif msg_type == 'registered_auth':
+                    logging.info(f"Worker authenticated with server. Please copy the following session string:")
+                    session_string = self.generate_session_string(
+                        room_id=data.get('room_id'),
+                        token=data.get('token'),
+                        peer_id=data.get('peer_id')
+                    )
+                    logging.info(session_string)
+                    # ex. 'sleap-session:eyJyb29tX2lkIjogImFiYzEyMyIsICJ0b2tlbiI6I'
+
                 # Handle "trickle ICE" for non-local ICE candidates (might be unnecessary)
-                elif data.get('type') == 'candidate':
+                elif msg_type == 'candidate':
                     print("Received ICE candidate")
                     candidate = data.get('candidate')
                     await pc.addIceCandidate(candidate)
 
-                elif data.get('type') == 'quit': # NOT initiator, received quit request from worker
+                elif msg_type == 'error':
+                    logging.error(f"Error received from server: {data.get('reason')}")
+                    await self.clean_exit()
+                    return
+
+                elif msg_type == 'quit': # NOT initiator, received quit request from worker
                     print("Received quit request from Client. Closing connection...")
                     await self.clean_exit()
                     return
@@ -626,6 +701,16 @@ class RTCWorkerClient:
         self.pc.on("datachannel", self.on_datachannel)
         self.pc.on("iceconnectionstatechange", self.on_iceconnectionstatechange)
 
+        # 1. Sign-in anonymously with Firebase to get an ID token.
+        fb_json = self.firebase_anonymous_signin()
+        id_token = fb_json.get("idToken")
+        # refresh_token = fb_json.get("refreshToken")
+        # expires_in = fb_json.get("expiresIn")
+        
+        # Create the room and get the room ID and token.
+        room_json = self.request_create_room(id_token)
+        logging.info(f"Room created with ID: {room_json['room_id']} and token: {room_json['token']}")
+
         # Establish a WebSocket connection to the signaling server.
         logging.info(f"Connecting to signaling server at {DNS}:{port_number}...")
         async with websockets.connect(f"{DNS}:{port_number}") as websocket:
@@ -635,11 +720,18 @@ class RTCWorkerClient:
 
             # Register the worker with the server.
             logging.info(f"Registering {peer_id} with signaling server...")
-            await self.websocket.send(json.dumps({'type': 'register', 'peer_id': peer_id}))
+            await self.websocket.send(json.dumps({
+                'type': 'register', 
+                'peer_id': peer_id, # identify a peer uniquely in the room (Zoom username)
+                'room_id': room_json['room_id'], # from backend API call for room identification (Zoom meeting ID)
+                'token': room_json['token'], # from backend API call for room joining (Zoom meeting password)
+                'id_token': id_token, # from anon. Firebase sign-in (Prevent peer spoofing, even anonymously)
+                # w/ id_token, only Firebase authenticated users can register.
+            }))
             logging.info(f"{peer_id} sent to signaling server for registration!")
 
             # Handle incoming messages from server (e.g. answers).
-            await self.handle_connection(self.pc, self.websocket)
+            await self.handle_connection(self.pc, self.websocket, peer_id)
             logging.info(f"{peer_id} connected with client!")
 
 if __name__ == "__main__":
@@ -649,12 +741,15 @@ if __name__ == "__main__":
     # Create the RTCPeerConnection object.
     pc = RTCPeerConnection()
 
+    # Generate a unique peer ID for the worker.
+    peer_id = f"worker-{uuid.uuid4()}"
+
     # Run the worker 
     try:
         asyncio.run(
             worker.run_worker(
                 pc=pc,
-                peer_id="worker1",
+                peer_id=peer_id,
                 DNS="ws://ec2-54-176-92-10.us-west-1.compute.amazonaws.com",
                 port_number=8080
             )

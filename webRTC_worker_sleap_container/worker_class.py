@@ -1,4 +1,5 @@
 import asyncio
+import boto3
 import base64
 import subprocess
 import stat
@@ -44,7 +45,7 @@ class RTCWorkerClient:
         return f"sleap-session:{encoded}"
 
 
-    def request_create_room(self, id_token: str):
+    def request_create_room(self, id_token):
         """Requests the signaling server to create a room and returns the room ID and token.
 
         Args:
@@ -54,8 +55,9 @@ class RTCWorkerClient:
         """
         
         # Port 8001 for server_routes.py
-        url = "http://ec2-54-176-92-10.us-west-1.compute.amazonaws.com:8001/create-room"
-        headers = {"Authorization": f"Bearer {id_token}"}
+        # CHANGE TO EC2 INSTANCE DNS LATER
+        url = "http://localhost:8001/create-room"
+        headers = {"Authorization": f"Bearer {id_token}"} # Use the ID token string for authentication
 
         response = requests.post(url, headers=headers)
         
@@ -66,15 +68,17 @@ class RTCWorkerClient:
             raise Exception("Failed to create room")
 
 
-    def firebase_anonymous_signin(self):
-        """Signs in anonymously with Firebase and returns the ID token."""
+    def request_anonymous_signin(self) -> str:
+        """Request an anonymous token from Signaling Server."""
+        
+        # CHANGE TO EC2 INSTANCE DNS LATER
+        url = "http://localhost:8001/anonymous-signin"
+        response = requests.post(url)
 
-        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={os.environ.get('FIREBASE_API_KEY')}"
-        r = requests.post(url, json={"returnSecureToken": True})
-        if r.status_code == 200:
-            return r.json()
+        if response.status_code == 200:
+            return response.json()["id_token"]
         else:
-            logging.error(f"Failed to sign in anonymously: {r.status_code}")
+            logging.error(f"Failed to get anonymous token: {response.text}")
             return None
 
 
@@ -701,14 +705,20 @@ class RTCWorkerClient:
         self.pc.on("datachannel", self.on_datachannel)
         self.pc.on("iceconnectionstatechange", self.on_iceconnectionstatechange)
 
-        # 1. Sign-in anonymously with Firebase to get an ID token.
-        fb_json = self.firebase_anonymous_signin()
-        id_token = fb_json.get("idToken")
-        # refresh_token = fb_json.get("refreshToken")
-        # expires_in = fb_json.get("expiresIn")
+        # 1. Sign-in anonymously with AWS Cognito to get an ID token.
+        id_token = self.request_anonymous_signin()
         
+        if not id_token:
+            logging.error("Failed to sign in anonymously. Exiting...")
+            return
+        
+        logging.info(f"Anonymous sign-in successful. ID token: {id_token}")
+       
         # Create the room and get the room ID and token.
         room_json = self.request_create_room(id_token)
+        if not room_json or 'room_id' not in room_json or 'token' not in room_json:
+            logging.error("Failed to create room or get room ID/token. Exiting...")
+            return
         logging.info(f"Room created with ID: {room_json['room_id']} and token: {room_json['token']}")
 
         # Establish a WebSocket connection to the signaling server.

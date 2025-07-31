@@ -1,63 +1,120 @@
 import asyncio
+from datetime import datetime, timedelta
+import boto3
+import requests
 import threading
 from time import time
-import firebase_admin
 import json
 import logging
-import os
 import websockets
-import secrets, time, uuid
+import time
 import uvicorn
+import uuid
 
 from aiortc import RTCPeerConnection, RTCSessionDescription
-from fastapi import FastAPI, Request, HTTPException
-from firebase_admin import credentials, firestore, auth
+from fastapi import FastAPI, Request, HTTPException, Header
+from jose import jwt
+from urllib.request import urlopen
 
 # Setup logging.
 logging.basicConfig(level=logging.INFO)
 
-# Key: peer_id, Value: specific peer websocket 
-connected_peers = {} 
-
-# Maps room_id -> { "token": ..., "expires_at": ..., "created_by": ..., "peers": { peer_id: websocket } }
+# Global variables to store rooms and peer connections for websocket objects.
 ROOMS = {}
 PEER_TO_ROOM = {}
+
+# AWS Cognito and DynamoDB initialization/configuration.
+COGNITO_REGION = "us-west-1"
+COGNITO_USER_POOL_ID = "us-west-1_XXXXXXXXXX"  # Temp
+COGNITO_APP_CLIENT_ID = "XXXXXXXXXXX"  # Temp
+COGNITO_KEYS_URL = f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/jwks.json"
+JWKS = requests.get(COGNITO_KEYS_URL).json()["keys"]
+
+# Initialize AWS SDK (boto3 Python API for AWS).
+cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION)
+dynamodb = boto3.resource('dynamodb', region_name='us-west-1')
+rooms_table = dynamodb.Table('rooms')
 
 # FastAPI App (Room Creaton)
 app = FastAPI()
 
-# Initialize Firebase Admin SDK.
-cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-cred = credentials.Certificate(cred_path)
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+
+def verify_cognito_token(token):
+    try:
+        claims = jwt.decode(
+            token,
+            JWKS,
+            algorithms=["RS256"],
+            audience=COGNITO_APP_CLIENT_ID,
+            issuer=f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}"
+        )
+        return claims
+    except jwt.JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Token verification failed: {e}")
+
+
+@app.post("/anonymous-signin")
+async def anonymous_signin():
+    """Handles anonymous sign-in and returns a Cognito ID token."""
+    
+    # Create a random username and password.
+    username = str(uuid.uuid4())
+    password = f"Aa{uuid.uuid4().hex}!"
+
+    try:
+        # Sign up the user with the random credentials.
+        response = cognito_client.sign_up(
+            ClientId=COGNITO_APP_CLIENT_ID,
+            Username=username,
+            Password=password
+        )
+
+        # If sign-up is successful, the user is confirmed automatically.
+        cognito_client.admin_confirm_sign_up(
+            UserPoolId=COGNITO_USER_POOL_ID,
+            Username=username
+        )
+
+        # Sign in the user to get tokens.
+        response = cognito_client.initiate_auth(
+            ClientId=COGNITO_APP_CLIENT_ID,
+            AuthFlow='USER_PASSWORD_AUTH',
+            AuthParameters={
+                'USERNAME': username,
+                'PASSWORD': password
+            }
+        )
+
+        return {"id_token": response["AuthenticationResult"]["IdToken"]}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Anonymous sign-in failed: {e}")
 
 
 @app.post("/create-room")
-async def create_room(req: Request):
-    auth_header = req.headers.get("Authorization")
-    if not auth_header:
-        raise HTTPException(401, "Missing Authorization header")
-    
-    id_token = auth_header.split(" ")[1] # Firebase ID token from anon. sign-in
-    try:
-        decoded = auth.verify_id_token(id_token)
-    except:
-        raise HTTPException(401, "Invalid token")
-    
-    uid = decoded["uid"]
+async def create_room(auth: str = Header(...)):
+    """Creates a new room and returns the room ID and token."""
+    # Extract token from Authorization header
+    token = auth.replace("Bearer ", "") 
 
-    # Generate a unique room ID and token to be associated with this verified Firebase ID token.
-    # Firebase ID token -> uid
-    room_id = str(uuid.uuid4())
-    token = secrets.token_urlsafe(32)
+    # Cognito ID token verification.
+    claims = verify_cognito_token(token)
+    uid = claims["sub"] 
 
-    db.collection("rooms").document(room_id).set({
-        "created_by": uid,
+    # Generate a unique room ID and token to be associated with this verified Cognito ID token.
+    room_id = str(uuid.uuid4())[:8]
+    token = str(uuid.uuid4())[:6]
+    expires_at = int((datetime.utcnow() + timedelta(hours=2)).timestamp())  # 2 hours TTL
+
+    # Create a new room item in DynamoDB.
+    item = {
+        "room_id": room_id,
+        "created_by": uid, # user ID from Cognito ID token
         "token": token,
-        "expires_at": time.time() + 10 * 60
-    })
+        "expires_at": expires_at  # 2 hours TTL
+    }
 
+    rooms_table.put_item(Item=item)
     return { "room_id": room_id, "token": token }
 
 
@@ -67,27 +124,31 @@ async def handle_register(websocket, message):
     peer_id = message.get('peer_id') # identify a peer uniquely in the room (Zoom username)
     room_id = message.get('room_id') # from backend API call for room identification (Zoom meeting ID)
     token = message.get('token') # from backend API call for room joining (Zoom meeting password)
-    id_token = message.get('id_token') # from anon. Firebase sign-in (prevent peer spoofing, even anonymously)
+    id_token = message.get('id_token') # from anon. Cognito sign-in (prevent peer spoofing, even anonymously)
 
     # Validate required fields.
     if not all([peer_id, room_id, token, id_token]):
         await websocket.send(json.dumps({"type": "error", "reason": "Missing required fields"}))
-        return  
+        return
 
-    # 1. Verify Firebase ID token (passed from peer Firebase anonymous sign-in).
+    # 1. Verify Cognito ID token (passed from peer Cognito anonymous sign-in).
     try:
-        decoded = auth.verify_id_token(id_token)
-        uid = decoded['uid']
+        claims = verify_cognito_token(id_token)
+        uid = claims["sub"]  # user ID from Cognito ID token
     except Exception as e:
         logging.error(f"Token verification failed: {e}")
         await websocket.send(json.dumps({"error": "Invalid token"}))
         return
 
-    # 2. Can now fetch prev. created Firestore room document.
+    # 2. Can now fetch prev. created DynamoDB room document.
     try:
-        doc = db.collection("rooms").document(room_id).get()
-        # Format: {
-        #     "created_by": uid, decoded Firebase ID token,
+        # doc = db.collection("rooms").document(room_id).get()
+        response = rooms_table.get_item(Key={"room_id": room_id})
+        room_data = response.get('Item')
+
+        # Item Format: {
+        #     "room_id": room_id,
+        #     "created_by": uid, decoded ID token,
         #     "token": token,
         #     "expires_at": time.time() + 10 * 60
         # }
@@ -98,13 +159,11 @@ async def handle_register(websocket, message):
         await websocket.send(json.dumps({"type": "error", "reason": "Firestore error"}))
         return
 
-    if not doc.exists:
+    if not room_data:
         await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
         return
-
-    room_data = doc.to_dict()
     
-    # 3. Compare token from request with the one stored in Firestore.
+    # 3. Compare token from request with the one stored in DynamoDB.
     # i.e. check "Zoom meeting password" is correct. (Both peer must have same token to join the room.)
     # If Client calls, should be using Worker's token. Vice versa.
     if token != room_data.get("token"):
@@ -116,7 +175,7 @@ async def handle_register(websocket, message):
         await websocket.send(json.dumps({"type": "error", "reason": "Room expired"}))
         return
     
-    # 4. Cannot store peer's websocket object directly in Firestore document, so keep it in memory.
+    # 4. Cannot store peer's websocket object directly in document, so keep it in memory.
     # Client should not be able to create a room since Worker would have already created it.
     # Looks the same as Firestore document, but in memory and with a 'peers' dict.
     if room_id not in ROOMS:
@@ -172,25 +231,6 @@ async def forward_message(sender_pid: str, target_pid: str, data):
         await target_websocket.send(json.dumps(data))
     except:
         logging.error(f"Failed to send message from {sender_pid} to {target_pid}. It may have disconnected.")
-
-
-def verify_token(id_token: str):
-    """Verifies the Firebase ID token and returns the decoded token.
-
-    Args:
-        id_token (str): The Firebase ID token to verify.
-    Returns:
-        str: The user ID if the token is valid, otherwise raises an exception.
-    Raises:
-        ValueError: If the token is invalid or expired.
-    """
-
-    try:
-        decoded_token = auth.verify_id_token(id_token)
-        return decoded_token['uid']
-    except Exception as e:
-        logging.error(f"Token verification failed: {e}")
-        raise ValueError("Invalid or expired token")
     
 
 def get_room(room_id: str):
@@ -202,16 +242,18 @@ def get_room(room_id: str):
         dict: The room document data if found, otherwise None.
     """
 
-    # Fetch the room document from Firestore.
-    doc = db.collection("rooms").document(room_id).get()
+    # Fetch the room document from DynamoDB.
+    
+    response = rooms_table.get_item(Key={"room_id": room_id})
+    doc = response.get('Item')
 
     # Check if the document exists.
-    if not doc.exists:
-        logging.error(f"Room {room_id} does not exist.")
+    if not doc:
+        logging.error(f"Room {room_id} not found in DynamoDB.")
         return None
     
     # Return the document data as a dictionary.
-    return doc.to_dict()
+    return doc
 
 
 async def handle_client(websocket):
@@ -229,7 +271,6 @@ async def handle_client(websocket):
 		Exception: An error occurred while handling the client
     """
     
-    peer_id = None
     try:
         async for message in websocket:
             try:
@@ -303,10 +344,13 @@ async def handle_client(websocket):
         logging.info(f"Error handling client: {e}")
     
     finally:
-        if peer_id:
-            # disconnect the peer
-            del connected_peers[peer_id]
-            logging.info(f"Peer disconnected: {peer_id}")
+        # Delete the room.
+        logging.info("Exiting server...")
+
+        # if peer_id:
+        #     # disconnect the peer
+        #     # del connected_peers[peer_id]
+        #     logging.info(f"Peer disconnected: {peer_id}")
 
 
 def run_fastapi_server():

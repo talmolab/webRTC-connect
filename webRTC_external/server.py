@@ -10,6 +10,7 @@ import websockets
 import time
 import uvicorn
 import uuid
+import os
 
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from fastapi import FastAPI, Request, HTTPException, Header
@@ -24,9 +25,9 @@ ROOMS = {}
 PEER_TO_ROOM = {}
 
 # AWS Cognito and DynamoDB initialization/configuration.
-COGNITO_REGION = "us-west-1"
-COGNITO_USER_POOL_ID = "us-west-1_XXXXXXXXXX"  # Temp
-COGNITO_APP_CLIENT_ID = "XXXXXXXXXXX"  # Temp
+COGNITO_REGION = os.environ['COGNITO_REGION']
+COGNITO_USER_POOL_ID = os.environ['COGNITO_USER_POOL_ID']
+COGNITO_APP_CLIENT_ID = os.environ['COGNITO_APP_CLIENT_ID']
 COGNITO_KEYS_URL = f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/jwks.json"
 JWKS = requests.get(COGNITO_KEYS_URL).json()["keys"]
 
@@ -92,10 +93,10 @@ async def anonymous_signin():
 
 
 @app.post("/create-room")
-async def create_room(auth: str = Header(...)):
+async def create_room(authorization: str = Header(...)):
     """Creates a new room and returns the room ID and token."""
     # Extract token from Authorization header
-    token = auth.replace("Bearer ", "") 
+    token = authorization.replace("Bearer ", "") 
 
     # Cognito ID token verification.
     claims = verify_cognito_token(token)
@@ -114,7 +115,9 @@ async def create_room(auth: str = Header(...)):
         "expires_at": expires_at  # 2 hours TTL
     }
 
+    # Store the room in DynamoDB.
     rooms_table.put_item(Item=item)
+    
     return { "room_id": room_id, "token": token }
 
 
@@ -131,7 +134,7 @@ async def handle_register(websocket, message):
         await websocket.send(json.dumps({"type": "error", "reason": "Missing required fields"}))
         return
 
-    # 1. Verify Cognito ID token (passed from peer Cognito anonymous sign-in).
+    # Verify Cognito ID token (passed from peer Cognito anonymous sign-in).
     try:
         claims = verify_cognito_token(id_token)
         uid = claims["sub"]  # user ID from Cognito ID token
@@ -140,7 +143,7 @@ async def handle_register(websocket, message):
         await websocket.send(json.dumps({"error": "Invalid token"}))
         return
 
-    # 2. Can now fetch prev. created DynamoDB room document.
+    # Can now fetch prev. created DynamoDB room document.
     try:
         # doc = db.collection("rooms").document(room_id).get()
         response = rooms_table.get_item(Key={"room_id": room_id})
@@ -156,15 +159,15 @@ async def handle_register(websocket, message):
         # If Client calls, should be using Worker's room_id. Vice versa.
     except Exception as e:
         logging.error(f"Failed to fetch room {room_id}: {e}")
-        await websocket.send(json.dumps({"type": "error", "reason": "Firestore error"}))
+        await websocket.send(json.dumps({"type": "error", "reason": "DynamoDB error"}))
         return
 
     if not room_data:
         await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
         return
     
-    # 3. Compare token from request with the one stored in DynamoDB.
-    # i.e. check "Zoom meeting password" is correct. (Both peer must have same token to join the room.)
+    # Compare token from request with the one stored in DynamoDB.
+    # i.e. check "Zoom meeting password" is correct. (Both peer must have same token to join the same room.)
     # If Client calls, should be using Worker's token. Vice versa.
     if token != room_data.get("token"):
         await websocket.send(json.dumps({"type": "error", "reason": "Invalid token"}))
@@ -234,7 +237,7 @@ async def forward_message(sender_pid: str, target_pid: str, data):
     
 
 def get_room(room_id: str):
-    """Fetches a room document from Firestore by room_id.
+    """Fetches a room document from DynamoDB by room_id.
 
     Args:
         room_id (str): The ID of the room to fetch.

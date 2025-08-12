@@ -56,7 +56,7 @@ class RTCWorkerClient:
         
         # Port 8001 for server_routes.py
         # CHANGE TO EC2 INSTANCE DNS LATER
-        url = "http://localhost:8001/create-room"
+        url = "http://ec2-54-176-92-10.us-west-1.compute.amazonaws.com:8001/create-room"
         headers = {"Authorization": f"Bearer {id_token}"} # Use the ID token string for authentication
 
         response = requests.post(url, headers=headers)
@@ -72,7 +72,7 @@ class RTCWorkerClient:
         """Request an anonymous token from Signaling Server."""
         
         # CHANGE TO EC2 INSTANCE DNS LATER
-        url = "http://localhost:8001/anonymous-signin"
+        url = "http://ec2-54-176-92-10.us-west-1.compute.amazonaws.com:8001/anonymous-signin"
         response = requests.post(url)
 
         if response.status_code == 200:
@@ -143,11 +143,11 @@ class RTCWorkerClient:
             if process.returncode == 0:
                 logging.info(f"[DONE] Job {job_name} completed successfully.")
                 if channel.readyState == "open":
-                    channel.send(f"TRAIN_END::{job_name}")
+                    channel.send(f"TRAIN_JOB_END::{job_name}")
             else:
                 logging.warning(f"[FAILED] Job {job_name} exited with code {process.returncode}.")
                 if channel.readyState == "open":
-                    channel.send(f"TRAIN_ERROR::{job_name}::{process.returncode}")
+                    channel.send(f"TRAIN_JOB_ERROR::{job_name}::{process.returncode}")
 
             # try:
             #     subprocess.run([
@@ -165,7 +165,7 @@ class RTCWorkerClient:
             #     logging.error(f"Training job {job_name} failed with error: {e.stderr}")
             #     continue
 
-            channel.send(f"TRAIN_JOB_END::{job_name}")
+            # channel.send(f"TRAIN_JOB_END::{job_name}")
 
         channel.send("TRAINING_JOBS_DONE")
 
@@ -602,7 +602,7 @@ class RTCWorkerClient:
                             # Zip the results.
                             logging.info("Zipping results...")
                             zipped_file_name = f"trained_{file_name}"
-                            await self.zip_results(zipped_file_name, f"{self.save_dir}/{self.output_dir}") # normally, "/app/shared_data/models"
+                            await self.zip_results(zipped_file_name, f"{self.save_dir}/{self.output_dir}") # normally, "/app/shared_data /models"
 
                             # Send the zipped file to the client.
                             logging.info(f"Sending zipped file to client: {zipped_file_name}")
@@ -626,18 +626,18 @@ class RTCWorkerClient:
                     self.received_files[file_name] = bytearray()
                     logging.info(f"File name received: {file_name}, of size {file_size}")
                 elif "ZMQ_CTRL::" in message:
-                    logging.info(f"ZMQ control message received: {message}")
+                    logging.info(f"ZMQ LossViewer control message received: {message}")
                     _, zmq_msg = message.split("ZMQ_CTRL::", 1)
-                    
-                    # ProgressListenerZMQ listens on zmq_address, send updates there.
-                    # Should be either stop or cancel training cmd.
+
+                    # Send LossViewer's control message to the Trainer client (listening on control port 9000).
+                    # Remember, the Trainer printed: "ZMQ controller subscribed to: tcp://127.0.0.1:9000", so publish there.
                     if self.ctrl_socket != None:
                         self.ctrl_socket.send_string(zmq_msg)
+                        logging.info(f"Sent control message to Trainer: {zmq_msg}")
                     else:
                         logging.error(f"ZMQ control socket not initialized {self.ctrl_socket}. Cannot send control message.")
+                    
 
-                    # Update the client with the control message.
-                    channel.send(f"ZMQ_CTRL::{zmq_msg}")
                 else:
                     logging.info(f"Client sent: {message}")
                     await self.send_worker_messages(channel, self.pc, self.websocket)
@@ -705,7 +705,7 @@ class RTCWorkerClient:
         self.pc.on("datachannel", self.on_datachannel)
         self.pc.on("iceconnectionstatechange", self.on_iceconnectionstatechange)
 
-        # 1. Sign-in anonymously with AWS Cognito to get an ID token.
+        # Sign-in anonymously with AWS Cognito to get an ID token (str).
         id_token = self.request_anonymous_signin()
         
         if not id_token:

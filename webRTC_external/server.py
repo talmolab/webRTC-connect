@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import boto3
 import requests
 import threading
-from time import time
+import time
 import json
 import logging
 import websockets
@@ -33,7 +33,7 @@ JWKS = requests.get(COGNITO_KEYS_URL).json()["keys"]
 
 # Initialize AWS SDK (boto3 Python API for AWS).
 cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION)
-dynamodb = boto3.resource('dynamodb', region_name='us-west-1')
+dynamodb = boto3.resource('dynamodb', region_name=COGNITO_REGION)
 rooms_table = dynamodb.Table('rooms')
 
 # FastAPI App (Room Creaton)
@@ -166,7 +166,7 @@ async def handle_register(websocket, message):
             return
         
         # Check room expiration.
-        if time() > room_data.get("expires_at"):
+        if time.time() > room_data.get("expires_at"):
             await websocket.send(json.dumps({"type": "error", "reason": "Room expired"}))
             return
         

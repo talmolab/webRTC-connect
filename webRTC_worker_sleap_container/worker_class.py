@@ -76,7 +76,7 @@ class RTCWorkerClient:
         response = requests.post(url)
 
         if response.status_code == 200:
-            return response.json()["id_token"]
+            return response.json()["id_token"] # should be string type
         else:
             logging.error(f"Failed to get anonymous token: {response.text}")
             return None
@@ -415,9 +415,9 @@ class RTCWorkerClient:
                 elif msg_type == 'registered_auth':
                     logging.info(f"Worker authenticated with server. Please copy the following session string:")
                     session_string = self.generate_session_string(
-                        room_id=data.get('room_id'),
-                        token=data.get('token'),
-                        peer_id=data.get('peer_id')
+                        room_id=data.get('room_id'), # room ID
+                        token=data.get('token'), # room password
+                        peer_id=data.get('peer_id') # peer's ID
                     )
                     logging.info(session_string)
                     # ex. 'sleap-session:eyJyb29tX2lkIjogImFiYzEyMyIsICJ0b2tlbiI6I'
@@ -709,13 +709,14 @@ class RTCWorkerClient:
         id_token = self.request_anonymous_signin()
         
         if not id_token:
-            logging.error("Failed to sign in anonymously. Exiting...")
+            logging.error("Failed to sign in anonymously. No ID token given. Exiting...")
             return
         
         logging.info(f"Anonymous sign-in successful. ID token: {id_token}")
        
         # Create the room and get the room ID and token.
         room_json = self.request_create_room(id_token)
+
         if not room_json or 'room_id' not in room_json or 'token' not in room_json:
             logging.error("Failed to create room or get room ID/token. Exiting...")
             return
@@ -735,8 +736,8 @@ class RTCWorkerClient:
                 'peer_id': peer_id, # identify a peer uniquely in the room (Zoom username)
                 'room_id': room_json['room_id'], # from backend API call for room identification (Zoom meeting ID)
                 'token': room_json['token'], # from backend API call for room joining (Zoom meeting password)
-                'id_token': id_token, # from anon. Firebase sign-in (Prevent peer spoofing, even anonymously)
-                # w/ id_token, only Firebase authenticated users can register.
+                'id_token': id_token, # from anon. Cognito sign-in (Prevent peer spoofing, even anonymously)
+                # w/ id_token, only Cognito authenticated users can register.
             }))
             logging.info(f"{peer_id} sent to signaling server for registration!")
 

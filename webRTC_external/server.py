@@ -131,7 +131,7 @@ async def handle_register(websocket, message):
 
     # Validate required fields.
     if not all([peer_id, room_id, token, id_token]):
-        await websocket.send(json.dumps({"type": "error", "reason": "Missing required fields"}))
+        await websocket.send(json.dumps({"type": "error", "reason": "Missing required fields during registration."}))
         return
 
     # Verify Cognito ID token (passed from peer Cognito anonymous sign-in).
@@ -156,55 +156,54 @@ async def handle_register(websocket, message):
         #     "expires_at": time.time() + 10 * 60
         # }
 
-        # If Client calls, should be using Worker's room_id. Vice versa.
+        if not room_data:
+            await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
+            return
+        
+        # If Client calls, should be using Worker's token. Vice versa.
+        if token != room_data.get("token"):
+            await websocket.send(json.dumps({"type": "error", "reason": "Invalid token"}))
+            return
+        
+        # Check room expiration.
+        if time() > room_data.get("expires_at"):
+            await websocket.send(json.dumps({"type": "error", "reason": "Room expired"}))
+            return
+        
+        # 4. Cannot store peer's websocket object directly in document, so keep it in memory.
+        # Client should not be able to create a room since Worker would have already created it.
+        # Looks the same as DynamoDB document, but in memory and with a 'peers' dict.
+        if room_id not in ROOMS:
+            ROOMS[room_id] = {
+                "created_by": uid,
+                "token": room_data["token"],
+                "expires_at": room_data["expires_at"],
+                "peers": {}
+            }
+        # Compare token from request with the one stored in DynamoDB.
+        # i.e. check "Zoom meeting password" is correct. (Both peer must have same token to join the same room.)
+
+        # room_id -> peers dict.: { peer_id: websocket }
+        # Zoom username associated with their websocket
+        # ROOMS[room_id]["peers"]: { Worker-3108: <Worker websocket object>, Client-1489: <Client websocket object> }
+        # PEER_TO_ROOM: { Worker-3108: room-7462, Client-1489: room-7462 }
+        ROOMS[room_id]["peers"][peer_id] = websocket
+        PEER_TO_ROOM[peer_id] = room_id
+
+        # Send registration confirmation to the peer.
+        await websocket.send(json.dumps({
+            "type": "registered_auth",
+            "room_id": room_id,
+            "token": token,
+            "peer_id": peer_id
+        }))
+
+        logging.info(f"[REGISTERED] peer_id: {peer_id} in room: {room_id}")
+
     except Exception as e:
         logging.error(f"Failed to fetch room {room_id}: {e}")
         await websocket.send(json.dumps({"type": "error", "reason": "DynamoDB error"}))
         return
-
-    if not room_data:
-        await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
-        return
-    
-    # Compare token from request with the one stored in DynamoDB.
-    # i.e. check "Zoom meeting password" is correct. (Both peer must have same token to join the same room.)
-    # If Client calls, should be using Worker's token. Vice versa.
-    if token != room_data.get("token"):
-        await websocket.send(json.dumps({"type": "error", "reason": "Invalid token"}))
-        return
-    
-    # Check room expiration.
-    if time() > room_data.get("expires_at"):
-        await websocket.send(json.dumps({"type": "error", "reason": "Room expired"}))
-        return
-    
-    # 4. Cannot store peer's websocket object directly in document, so keep it in memory.
-    # Client should not be able to create a room since Worker would have already created it.
-    # Looks the same as Firestore document, but in memory and with a 'peers' dict.
-    if room_id not in ROOMS:
-        ROOMS[room_id] = {
-            "created_by": uid,
-            "token": room_data["token"],
-            "expires_at": room_data["expires_at"],
-            "peers": {}
-        }
-
-    # room_id -> peers dict.: { peer_id: websocket }
-    # Zoom username associated with their websocket
-    # ROOMS[room_id]["peers"]: { Worker-3108: <Worker websocket object>, Client-1489: <Client websocket object> }
-    # PEER_TO_ROOM: { Worker-3108: room-7462, Client-1489: room-7462 }
-    ROOMS[room_id]["peers"][peer_id] = websocket
-    PEER_TO_ROOM[peer_id] = room_id
-
-    # Send registration confirmation to the peer.
-    await websocket.send(json.dumps({
-        "type": "registered_auth",
-        "room_id": room_id,
-        "token": token,
-        "peer_id": peer_id
-    }))
-
-    logging.info(f"[REGISTERED] peer_id: {peer_id} in room: {room_id}")
 
 
 async def forward_message(sender_pid: str, target_pid: str, data):

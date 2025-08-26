@@ -33,7 +33,7 @@ class RTCWorkerClient:
         self.websocket = None  # WebSocket connection will be set later
 
 
-    def generate_session_string(room_id: str, token: str, peer_id: str):
+    def generate_session_string(self, room_id: str, token: str, peer_id: str):
         """Generates an encoded session string for the room."""
         session_data = {
             "r": room_id, 

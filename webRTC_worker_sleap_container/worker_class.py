@@ -415,9 +415,9 @@ class RTCWorkerClient:
                 elif msg_type == 'registered_auth':
                     logging.info(f"Worker authenticated with server. Please copy the following session string:")
                     session_string = self.generate_session_string(
-                        room_id=data.get('room_id'), # room ID
-                        token=data.get('token'), # room password
-                        peer_id=data.get('peer_id') # peer's ID
+                        data.get('room_id'), # room ID
+                        data.get('token'), # room password
+                        data.get('peer_id') # peer's ID
                     )
                     logging.info(session_string)
                     # ex. 'sleap-session:eyJyb29tX2lkIjogImFiYzEyMyIsICJ0b2tlbiI6I'

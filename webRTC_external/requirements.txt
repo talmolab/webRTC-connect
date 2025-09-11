@@ -1,0 +1,16 @@
+# Core webRTC and networking
+aiortc==1.11.0
+websockets==14.1
+
+# Web framework and server
+fastapi==0.115.6
+uvicorn==0.34.0
+
+# AWS services
+boto3==1.35.86
+
+# HTTP requests
+requests==2.32.3
+
+# JWT handling
+python-jose[cryptography]==3.3.0

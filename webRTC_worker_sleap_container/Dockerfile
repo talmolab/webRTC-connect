@@ -27,11 +27,13 @@ RUN apt update && apt install -y \
 RUN apt-get update && apt-get install -y zip unzip 
 
 # Install aiortc, asyncio, and websockets
-RUN pip install aiortc asyncio websockets flask
+RUN pip install aiortc asyncio websockets flask boto3 requests pyzmq
 
 # Copy the sleap_webRTC directory into the image's root dir
 COPY worker.py /app/worker.py
 COPY zmq_check.py /app/zmq_check.py
+COPY worker_class.py /app/worker_class.py
+COPY run_training.py /app/run_training.py
 
 # Ensure executable
 RUN chmod +x /app/worker.py

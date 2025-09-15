@@ -1,5 +1,20 @@
+# /// script
+# dependencies = [
+#   "asyncio",
+#   "boto3",
+#   "requests",
+#   "threading",
+#   "time",
+#   "json",
+#   "logging",
+#   "websockets",
+#   "uvicorn",
+#   "uuid",
+#   "os",
+# ]
+# ///
+
 import asyncio
-from datetime import datetime, timedelta
 import boto3
 import requests
 import threading
@@ -7,15 +22,13 @@ import time
 import json
 import logging
 import websockets
-import time
 import uvicorn
 import uuid
 import os
 
-from aiortc import RTCPeerConnection, RTCSessionDescription
-from fastapi import FastAPI, Request, HTTPException, Header
+from datetime import datetime, timedelta
+from fastapi import FastAPI, HTTPException, Header
 from jose import jwt
-from urllib.request import urlopen
 
 # Setup logging.
 logging.basicConfig(level=logging.INFO)

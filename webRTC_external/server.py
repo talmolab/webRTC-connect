@@ -1,16 +1,11 @@
 # /// script
 # dependencies = [
-#   "asyncio",
 #   "boto3",
+#   "fastapi",
+#   "python-jose[cryptography]",
 #   "requests",
-#   "threading",
-#   "time",
-#   "json",
-#   "logging",
-#   "websockets",
 #   "uvicorn",
-#   "uuid",
-#   "os",
+#   "websockets",
 # ]
 # ///
 

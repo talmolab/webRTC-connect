@@ -5,7 +5,7 @@ FROM python:3.12-slim-trixie
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Copy the just server.py into the image's root dir
-COPY server.py /app/server.py 
+COPY server.py /app/server.py
 
 # Ensure executable
 RUN chmod +x /app/server.py
@@ -14,4 +14,4 @@ RUN chmod +x /app/server.py
 EXPOSE 8080 5000 3478/udp 3478/tcp 8001
 
 # Run the server.py on container startup
-ENTRYPOINT ["uv run", "python3 /app/server.py"]
+ENTRYPOINT ["uv", "run", "python3", "/app/server.py"]

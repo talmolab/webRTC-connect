@@ -7,7 +7,7 @@ WORKDIR /app
 
 # Copy project files needed by uv
 COPY pyproject.toml /app/
-COPY .env /app/
+# COPY .env /app/
 COPY server.py /app/
 
 # Install dependencies

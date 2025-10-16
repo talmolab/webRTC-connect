@@ -1,19 +1,20 @@
-FROM python:3.9-slim
+# Use Python base image and install uv
+FROM python:3.12-slim-trixie
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Copy the requirements file into the image
-COPY requirements.txt /app/requirements.txt
+# Set working directory
+WORKDIR /app
 
-# Install the requirements
-RUN pip install -r /app/requirements.txt
+# Copy project files needed by uv
+COPY pyproject.toml /app/
+# COPY .env /app/
+COPY server.py /app/
 
-# Copy the just server.py into the image's root dir
-COPY server.py /app/server.py 
-
-# Ensure executable
-RUN chmod +x /app/server.py
+# Install dependencies
+RUN uv sync
 
 # Port exposed by the container, NOT computer (localhost), 8080 = websocket server, 3478 = TURN server
 EXPOSE 8080 5000 3478/udp 3478/tcp 8001
 
-# Run the server.py on container startup
-ENTRYPOINT ["sh", "-c", "python3 /app/server.py"]
+# Run the server on container startup
+ENTRYPOINT ["uv", "run", "python3", "server.py"]

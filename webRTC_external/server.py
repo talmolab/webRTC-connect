@@ -62,6 +62,51 @@ def verify_cognito_token(token):
         raise HTTPException(status_code=401, detail=f"Token verification failed: {e}")
 
 
+@app.post("/delete-peers-and-room")
+async def delete_peer_and_room(peer_id: str):
+    """Deletes all peers from their room and cleans up if the room is empty."""
+    # ROOMS[room_id]["peers"]: { Worker-3108: <Worker websocket object>, Client-1489: <Client websocket object> }
+    # PEER_TO_ROOM: { Worker-3108: room-7462, Client-1489: room-7462 }
+
+    room_id = PEER_TO_ROOM.get(peer_id)
+    if not room_id:
+        return {"status": "peer not found"}
+
+    room = ROOMS.get(room_id)
+    if not room:
+        return {"status": "room not found"}
+
+    # Remove the peer's websocket from the room's peers dictionary.
+    for peer_id in room["peers"]:
+        del room["peers"][peer_id]
+        logging.info(f"Peer {peer_id} removed from room {room_id}")
+
+        # Delete the Cognito user who created the room
+        try:
+            # Delete the Cognito user
+            cognito_client.admin_delete_user(
+                UserPoolId=COGNITO_USER_POOL_ID,
+                Username=peer_id
+            )
+            logging.info(f"Deleted Cognito user {peer_id}")
+        except Exception as e:
+            logging.error(f"Failed to delete Cognito user: {e}")
+
+    # Remove the peer from the PEER_TO_ROOM mapping.
+    del PEER_TO_ROOM[peer_id]
+
+    # If the room has no more peers, delete it from memory and DynamoDB.
+    if not room["peers"]:
+        del ROOMS[room_id]
+        try:
+            rooms_table.delete_item(Key={"room_id": room_id})
+            logging.info(f"Room {room_id} deleted from DynamoDB as it has no more peers.")
+        except Exception as e:
+            logging.error(f"Failed to delete room {room_id} from DynamoDB: {e}")
+
+    return {"status": "peer deleted successfully"}
+
+
 @app.post("/anonymous-signin")
 async def anonymous_signin():
     """Handles anonymous sign-in and returns a Cognito ID token."""
@@ -94,7 +139,10 @@ async def anonymous_signin():
             }
         )
 
-        return {"id_token": response["AuthenticationResult"]["IdToken"]}
+        return {
+            "id_token": response["AuthenticationResult"]["IdToken"],
+            "username": username # return username to later identify for deletion
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Anonymous sign-in failed: {e}")

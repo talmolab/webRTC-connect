@@ -1,0 +1,31 @@
+# AWS Configuration
+aws_region = "us-west-1"
+
+# Instance Configuration
+instance_type = "t3.medium" # Larger instance for production
+
+# Docker Image
+# Use specific version tag for production stability
+docker_image = "ghcr.io/talmolab/webrtc-server:linux-amd64-5416def2bccb0b946e6e297358875493ee08b388"
+
+# Cognito Configuration
+cognito_region        = "us-west-1"
+cognito_user_pool_id  = "us-west-1_XXXXXXXXX"      # Replace with your Cognito User Pool ID
+cognito_app_client_id = "xxxxxxxxxxxxxxxxxxxxxx"   # Replace with your Cognito App Client ID
+
+# Network Configuration
+# IMPORTANT: Restrict access to specific IP ranges for production
+# Example: University network, research lab, specific locations
+allowed_cidr_blocks = [
+  "203.0.113.0/24",    # Example: Lab network
+  "198.51.100.0/24",   # Example: University network
+]
+
+# Admin SSH access - restrict to specific admin IPs
+admin_cidr_blocks = [
+  "203.0.113.10/32",   # Example: Admin workstation
+]
+
+# Ports
+websocket_port = 8080
+http_port      = 8001

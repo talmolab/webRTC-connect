@@ -60,5 +60,6 @@ jobs:
           push: true # Push the image to GitHub Container Registry
           tags: |
             ghcr.io/${{ github.repository_owner }}/webrtc-server:${{ steps.sanitize_platform.outputs.sanitized_platform }}
+            ghcr.io/${{ github.repository_owner }}/webrtc-server:${{ steps.sanitize_platform.outputs.sanitized_platform }}-latest
             ghcr.io/${{ github.repository_owner }}/webrtc-server:${{ steps.sanitize_platform.outputs.sanitized_platform }}-python-3.9-slim
             ghcr.io/${{ github.repository_owner }}/webrtc-server:${{ steps.sanitize_platform.outputs.sanitized_platform }}-${{ steps.get_sha.outputs.sha }}

@@ -7,6 +7,10 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # Backend configuration is provided via -backend-config flag
+  # See backend-production.hcl for S3 backend settings
+  backend "s3" {}
 }
 
 provider "aws" {

@@ -6,7 +6,8 @@ on:
       - main
     paths:
       - webRTC_external/**
-      - .github/workflows/webrtc_server_test.yml 
+      - .github/workflows/webrtc_server_test.yml
+  workflow_dispatch: # Allow manual triggering from GitHub Actions UI 
 
 jobs:
   build:

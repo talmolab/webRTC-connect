@@ -1,0 +1,112 @@
+name: Deploy Terraform (Dev)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-deploy-dev.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-west-1' }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init
+        run: terraform init -backend-config=backend-dev.hcl
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        env:
+          TF_VAR_docker_image: ${{ secrets.TF_VAR_DOCKER_IMAGE }}
+          TF_VAR_cognito_user_pool_id: ${{ secrets.TF_VAR_COGNITO_USER_POOL_ID }}
+          TF_VAR_cognito_app_client_id: ${{ secrets.TF_VAR_COGNITO_APP_CLIENT_ID }}
+          TF_VAR_cognito_region: us-west-1
+          TF_VAR_aws_region: us-west-1
+          TF_VAR_instance_type: t3.small
+          TF_VAR_allowed_cidr_blocks: '["0.0.0.0/0"]'
+          TF_VAR_admin_cidr_blocks: '["0.0.0.0/0"]'
+          TF_VAR_websocket_port: 8080
+          TF_VAR_http_port: 8001
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        env:
+          TF_VAR_docker_image: ${{ secrets.TF_VAR_DOCKER_IMAGE }}
+          TF_VAR_cognito_user_pool_id: ${{ secrets.TF_VAR_COGNITO_USER_POOL_ID }}
+          TF_VAR_cognito_app_client_id: ${{ secrets.TF_VAR_COGNITO_APP_CLIENT_ID }}
+          TF_VAR_cognito_region: us-west-1
+          TF_VAR_aws_region: us-west-1
+          TF_VAR_instance_type: t3.small
+          TF_VAR_allowed_cidr_blocks: '["0.0.0.0/0"]'
+          TF_VAR_admin_cidr_blocks: '["0.0.0.0/0"]'
+          TF_VAR_websocket_port: 8080
+          TF_VAR_http_port: 8001
+        run: terraform apply -auto-approve tfplan
+
+      - name: Terraform Output
+        if: success()
+        env:
+          TF_VAR_docker_image: ${{ secrets.TF_VAR_DOCKER_IMAGE }}
+          TF_VAR_cognito_user_pool_id: ${{ secrets.TF_VAR_COGNITO_USER_POOL_ID }}
+          TF_VAR_cognito_app_client_id: ${{ secrets.TF_VAR_COGNITO_APP_CLIENT_ID }}
+          TF_VAR_cognito_region: us-west-1
+          TF_VAR_aws_region: us-west-1
+          TF_VAR_instance_type: t3.small
+          TF_VAR_allowed_cidr_blocks: '["0.0.0.0/0"]'
+          TF_VAR_admin_cidr_blocks: '["0.0.0.0/0"]'
+          TF_VAR_websocket_port: 8080
+          TF_VAR_http_port: 8001
+        run: |
+          echo "## Deployment Successful! :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Infrastructure Outputs" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          terraform output -json | jq -r 'to_entries[] | "\(.key) = \(.value.value)"' >> $GITHUB_STEP_SUMMARY || terraform output >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup on Failure
+        if: failure()
+        run: |
+          echo "Deployment failed. Consider running terraform destroy if resources were partially created."

@@ -1,0 +1,25 @@
+# AWS Configuration
+aws_region = "us-west-1"
+
+# Instance Configuration
+instance_type = "t3.small" # Small instance for dev
+
+# Docker Image
+# Update this to your signaling server image
+docker_image = "ghcr.io/talmolab/webrtc-server:linux-amd64-latest"
+
+# Cognito Configuration
+cognito_region        = "us-west-1"
+cognito_user_pool_id  = "us-west-1_XXXXXXXXX"      # Replace with your Cognito User Pool ID
+cognito_app_client_id = "xxxxxxxxxxxxxxxxxxxxxx"   # Replace with your Cognito App Client ID
+
+# Network Configuration
+# Open access for dev (WARNING: not secure, use specific IPs in production)
+allowed_cidr_blocks = ["0.0.0.0/0"]
+
+# Admin SSH access - replace with your IP
+admin_cidr_blocks = ["0.0.0.0/0"] # CHANGE THIS to your IP address
+
+# Ports
+websocket_port = 8080
+http_port      = 8001

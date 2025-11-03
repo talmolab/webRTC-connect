@@ -109,6 +109,44 @@ To build locally for testing you can use the command (from the root of the repo)
 docker build --platform linux/amd64 ./sleap_cuda
 ```
 
+## Infrastructure Deployment
+
+The signaling server can be deployed to AWS using Terraform for automated, reproducible infrastructure provisioning.
+
+### Key Features
+- **Elastic IP**: Stable IP address that persists across instance replacements
+- **Automated startup**: Docker container starts automatically on instance boot
+- **Multi-environment**: Separate configurations for dev, staging, and production
+- **Security**: Configurable network access controls and IAM roles
+- **Health checks**: Automated monitoring with automatic container restart
+
+### Quick Start
+
+1. Navigate to the Terraform directory:
+   ```bash
+   cd terraform/environments/dev  # or production
+   ```
+
+2. Configure variables:
+   ```bash
+   cp terraform.tfvars.example terraform.tfvars
+   # Edit terraform.tfvars with your values
+   ```
+
+3. Deploy:
+   ```bash
+   terraform init
+   terraform plan
+   terraform apply
+   ```
+
+4. Get connection details:
+   ```bash
+   terraform output
+   ```
+
+For complete deployment instructions, troubleshooting, and cost estimates, see [terraform/README.md](terraform/README.md).
+
 ## Support
 contact Elizabeth at eberrigan@salk.edu
 

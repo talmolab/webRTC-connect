@@ -6,14 +6,12 @@
       "Effect": "Allow",
       "Action": [
         "ec2:DescribeVpcs",
-        "ec2:DescribeVpcAttribute",
         "ec2:DescribeSubnets",
         "ec2:DescribeSecurityGroups",
         "ec2:DescribeImages",
         "ec2:DescribeInstances",
         "ec2:DescribeInstanceAttribute",
         "ec2:DescribeInstanceStatus",
-        "ec2:DescribeInstanceTypes",
         "ec2:DescribeVolumes",
         "ec2:DescribeAddresses",
         "ec2:DescribeNetworkInterfaces",
@@ -34,7 +32,6 @@
         "ec2:DisassociateAddress",
         "ec2:CreateTags",
         "ec2:DeleteTags",
-        "ec2:DescribeTags",
         "ec2:ModifyInstanceAttribute"
       ],
       "Resource": "*"
@@ -64,8 +61,8 @@
         "iam:TagInstanceProfile"
       ],
       "Resource": [
-        "arn:aws:iam::711387140753:role/sleap-rtc-signaling-*",
-        "arn:aws:iam::711387140753:instance-profile/sleap-rtc-signaling-*"
+        "arn:aws:iam::490004650932:role/sleap-rtc-signaling-*",
+        "arn:aws:iam::490004650932:instance-profile/sleap-rtc-signaling-*"
       ]
     },
     {
@@ -81,7 +78,7 @@
         "cognito-idp:AdminInitiateAuth",
         "cognito-idp:DescribeUserPool"
       ],
-      "Resource": "arn:aws:cognito-idp:us-west-1:711387140753:userpool/*"
+      "Resource": "arn:aws:cognito-idp:us-west-1:490004650932:userpool/*"
     },
     {
       "Sid": "DynamoDBAccess",
@@ -96,7 +93,7 @@
         "dynamodb:DescribeTable",
         "dynamodb:ListTables"
       ],
-      "Resource": "arn:aws:dynamodb:us-west-1:711387140753:table/rooms"
+      "Resource": "arn:aws:dynamodb:us-west-1:490004650932:table/rooms"
     },
     {
       "Sid": "CloudWatchLogs",
@@ -108,31 +105,7 @@
         "logs:DescribeLogGroups",
         "logs:DescribeLogStreams"
       ],
-      "Resource": "arn:aws:logs:us-west-1:711387140753:*"
-    },
-    {
-      "Sid": "S3BackendAccess",
-      "Effect": "Allow",
-      "Action": [
-        "s3:ListBucket",
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject"
-      ],
-      "Resource": [
-        "arn:aws:s3:::sleap-rtc-terraform-state-711387140753",
-        "arn:aws:s3:::sleap-rtc-terraform-state-711387140753/*"
-      ]
-    },
-    {
-      "Sid": "DynamoDBBackendAccess",
-      "Effect": "Allow",
-      "Action": [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:DeleteItem"
-      ],
-      "Resource": "arn:aws:dynamodb:us-west-1:711387140753:table/sleap-rtc-terraform-locks"
+      "Resource": "arn:aws:logs:us-west-1:490004650932:*"
     }
   ]
 }

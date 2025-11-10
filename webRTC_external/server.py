@@ -82,38 +82,104 @@ def verify_cognito_token(token):
         return claims
     except jwt.JWTError as e:
         raise HTTPException(status_code=401, detail=f"Token verification failed: {e}")
+    
+
+@app.post("/delete-peer")
+async def delete_peer(json_data: dict):
+    """Deletes a peer from its room without deleting the room itself."""
+    # ROOMS[room_id]["peers"]: { Worker-3108: <Worker websocket object>, Client-1489: <Client websocket object> }
+    # PEER_TO_ROOM: { Worker-3108: room-7462, Client-1489: room-7462 }
+
+    # Get room_id either directly or via peer_id lookup
+    peer_id = json_data.get("peer_id")
+    room_id = PEER_TO_ROOM.get(peer_id)
+    if not room_id:
+        logging.warning(f"[DELETE] Peer {peer_id} not found in PEER_TO_ROOM mapping")
+        return {"status": "peer not found"}
+
+    room = ROOMS.get(room_id)
+    if not room:
+        logging.warning(f"[DELETE] Room {room_id} not found in ROOMS")
+        return {"status": "room not found"}
+    
+    # Delete the User in Cognito.
+    try:
+        # Delete the Cognito user (peer_id IS the Cognito username)
+        logging.info(f"[DELETE] Deleting Cognito user: {peer_id} from pool: {COGNITO_USER_POOL_ID}")
+        cognito_client.admin_delete_user(
+            UserPoolId=COGNITO_USER_POOL_ID,
+            Username=peer_id
+        )
+        logging.info(f"[DELETE] Successfully deleted Cognito user {peer_id}")
+
+        # Remove peer from PEER_TO_ROOM mapping 
+        del PEER_TO_ROOM[peer_id]
+
+        # Remove peer from room's peers (updated for /metrics endpoint)
+        del room["peers"][peer_id]
+
+    except Exception as e:
+        logging.error(f"[DELETE] Failed to delete Cognito user {peer_id}: {e}")
+        logging.exception("Full traceback:")
+
+    # If the room has no more peers, delete from memory and DynamoDB.
+    if not room["peers"]:
+        del ROOMS[room_id]
+        try:
+            rooms_table.delete_item(Key={"room_id": room_id})
+            logging.info(f"Room {room_id} deleted from DynamoDB as it has no more peers.")
+        except Exception as e:
+            logging.error(f"Failed to delete room {room_id} from DynamoDB: {e}")
+
+    return {"status": f"peer deleted successfully. Room status: {'deleted' if room_id not in ROOMS else 'active'}"}
 
 
 @app.post("/delete-peers-and-room")
 async def delete_peer_and_room(json_data: dict):
-    """Deletes all peers from their room and cleans up if the room is empty."""
+    """Deletes all peers from their room and cleans up if the room is empty.
+
+    Accepts either:
+    - room_id directly (preferred to avoid race condition with WebSocket cleanup)
+    - peer_id (fallback for backward compatibility)
+    """
     # ROOMS[room_id]["peers"]: { Worker-3108: <Worker websocket object>, Client-1489: <Client websocket object> }
     # PEER_TO_ROOM: { Worker-3108: room-7462, Client-1489: room-7462 }
 
-    # Get associated room from peer_id
-    peer_id = json_data.get("peer_id")
-    room_id = PEER_TO_ROOM.get(peer_id)
+    # Get room_id either directly or via peer_id lookup
+    room_id = json_data.get("room_id")
     if not room_id:
-        return {"status": "peer not found"}
+        # Fallback to peer_id lookup (backward compatibility)
+        peer_id = json_data.get("peer_id")
+        room_id = PEER_TO_ROOM.get(peer_id)
+        if not room_id:
+            logging.warning(f"[DELETE] Peer {peer_id} not found in PEER_TO_ROOM mapping")
+            return {"status": "peer not found"}
+
     room = ROOMS.get(room_id)
     if not room:
+        logging.warning(f"[DELETE] Room {room_id} not found in ROOMS")
         return {"status": "room not found"}
 
     # Delete all Users in the room from Cognito.
+    # NOTE: peer_id IS the Cognito username (from /anonymous-signin response)
     peer_ids = list(room["peers"].keys())
-    for pid in peer_ids:
+    logging.info(f"[DELETE] Attempting to delete {len(peer_ids)} Cognito users from room {room_id}")
+    for peer_id in peer_ids:
         try:
-            # Delete the Cognito user
+            # Delete the Cognito user (peer_id IS the Cognito username)
+            logging.info(f"[DELETE] Deleting Cognito user: {peer_id} from pool: {COGNITO_USER_POOL_ID}")
             cognito_client.admin_delete_user(
                 UserPoolId=COGNITO_USER_POOL_ID,
-                Username=pid
+                Username=peer_id
             )
-            logging.info(f"Deleted Cognito user {pid}")
+            logging.info(f"[DELETE] Successfully deleted Cognito user {peer_id}")
 
-            # Remove peer from PEER_TO_ROOM mapping
-            del PEER_TO_ROOM[pid]
+            # Remove peer from PEER_TO_ROOM mapping (if it still exists)
+            if peer_id in PEER_TO_ROOM:
+                del PEER_TO_ROOM[peer_id]
         except Exception as e:
-            logging.error(f"Failed to delete Cognito user: {e}")
+            logging.error(f"[DELETE] Failed to delete Cognito user {peer_id}: {e}")
+            logging.exception("Full traceback:")
 
     # If the room has no more peers, delete from memory and DynamoDB.
     if not room["peers"]:
@@ -241,7 +307,7 @@ async def handle_register(websocket, message):
     Enhanced to support role and metadata for generic peer discovery.
     """
 
-    peer_id = message.get('peer_id') # identify a peer uniquely in the room (Zoom username)
+    peer_id = message.get('peer_id') # identify a peer uniquely in the room (Cognito username from /anonymous-signin)
     room_id = message.get('room_id') # from backend API call for room identification (Zoom meeting ID)
     token = message.get('token') # from backend API call for room joining (Zoom meeting password)
     id_token = message.get('id_token') # from anon. Cognito sign-in (prevent peer spoofing, even anonymously)
@@ -308,6 +374,7 @@ async def handle_register(websocket, message):
         # ROOMS[room_id]["peers"]: {
         #   Worker-3108: {websocket: <ws>, role: "worker", metadata: {...}, connected_at: timestamp}
         # }
+        # NOTE: peer_id IS the Cognito username (from /anonymous-signin response)
         ROOMS[room_id]["peers"][peer_id] = {
             "websocket": websocket,
             "role": role,
@@ -744,30 +811,6 @@ async def handle_client(websocket):
 
     except Exception as e:
         logging.error(f"Error handling client {peer_id}: {e}")
-
-    finally:
-        # Cleanup on disconnect
-        if peer_id:
-            room_id = PEER_TO_ROOM.get(peer_id)
-            if room_id and room_id in ROOMS:
-                # Remove peer from room
-                if peer_id in ROOMS[room_id]["peers"]:
-                    del ROOMS[room_id]["peers"][peer_id]
-                    logging.info(f"Removed peer {peer_id} from room {room_id}")
-
-                # If room is empty, clean it up
-                if not ROOMS[room_id]["peers"]:
-                    del ROOMS[room_id]
-                    logging.info(f"Room {room_id} is empty and has been removed")
-
-            # Remove peer-to-room mapping
-            if peer_id in PEER_TO_ROOM:
-                del PEER_TO_ROOM[peer_id]
-
-            # Update metrics
-            METRICS["active_connections"] = sum(len(room["peers"]) for room in ROOMS.values())
-
-        logging.info(f"Connection cleanup complete for peer {peer_id}")
 
 
 def run_fastapi_server():

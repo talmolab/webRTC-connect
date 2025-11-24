@@ -45,6 +45,7 @@ logging.basicConfig(level=logging.INFO)
 # }
 ROOMS = {}
 PEER_TO_ROOM = {}
+ROOM_ADMINS = {}  # room_id -> admin_peer_id (tracks admin per room for mesh networking)
 
 # Metrics tracking
 METRICS = {
@@ -315,6 +316,7 @@ async def handle_register(websocket, message):
     # NEW: Optional role and metadata for generic signaling
     role = message.get('role', 'peer')  # Default to 'peer' for backward compatibility
     metadata = message.get('metadata', {})  # Arbitrary application data
+    is_admin = message.get('is_admin', False)  # NEW: Admin flag for mesh networking
 
     # Validate required fields.
     if not all([peer_id, room_id, token, id_token]):
@@ -383,16 +385,41 @@ async def handle_register(websocket, message):
         }
         PEER_TO_ROOM[peer_id] = room_id
 
+        # NEW: Handle admin registration for mesh networking
+        if is_admin:
+            current_admin = ROOM_ADMINS.get(room_id)
+            if current_admin and current_admin != peer_id:
+                # CONFLICT: Another admin already exists
+                await websocket.send(json.dumps({
+                    "type": "admin_conflict",
+                    "room_id": room_id,
+                    "current_admin": current_admin,
+                }))
+                logging.info(f"[ADMIN_CONFLICT] {peer_id} tried to be admin, but {current_admin} already is")
+            else:
+                # First admin or re-registration of same admin
+                ROOM_ADMINS[room_id] = peer_id
+                logging.info(f"[ADMIN] {peer_id} is now admin of room {room_id}")
+
         # Update metrics
         METRICS["total_connections"] += 1
         METRICS["active_connections"] = sum(len(room["peers"]) for room in ROOMS.values())
 
-        # Send registration confirmation to the peer.
+        # Build peer list and metadata for discovery
+        peer_list = [pid for pid in ROOMS[room_id]["peers"].keys() if pid != peer_id]
+        peer_metadata = {}
+        for pid in peer_list:
+            peer_metadata[pid] = ROOMS[room_id]["peers"][pid].get("metadata", {})
+
+        # Send registration confirmation to the peer with discovery info
         await websocket.send(json.dumps({
             "type": "registered_auth",
             "room_id": room_id,
             "token": token,
-            "peer_id": peer_id
+            "peer_id": peer_id,
+            "admin_peer_id": ROOM_ADMINS.get(room_id),  # NEW: Current admin
+            "peer_list": peer_list,  # NEW: Other peers in room
+            "peer_metadata": peer_metadata,  # NEW: Metadata of other peers
         }))
 
         logging.info(f"[REGISTERED] peer_id: {peer_id} (role: {role}) in room: {room_id}")
@@ -701,6 +728,267 @@ async def handle_peer_message(websocket, message):
         }))
 
 
+async def handle_mesh_connect(websocket, message):
+    """Handle mesh connection request (relay offer to target peer).
+
+    Message format:
+    {
+        "type": "mesh_connect",
+        "from_peer_id": "worker-3",
+        "target_peer_id": "worker-2",
+        "offer": {
+            "sdp": "...",
+            "type": "offer"
+        }
+    }
+    """
+    from_peer_id = message.get("from_peer_id")
+    target_peer_id = message.get("target_peer_id")
+    offer = message.get("offer")
+
+    if not all([from_peer_id, target_peer_id, offer]):
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "INVALID_MESSAGE",
+            "message": "Missing required fields: from_peer_id, target_peer_id, offer"
+        }))
+        return
+
+    # Verify sender is in a room
+    room_id = PEER_TO_ROOM.get(from_peer_id)
+    if not room_id:
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "NOT_IN_ROOM",
+            "message": "Sender not in any room"
+        }))
+        return
+
+    room = ROOMS.get(room_id)
+    if not room:
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "ROOM_NOT_FOUND",
+            "message": f"Room {room_id} not found"
+        }))
+        return
+
+    # Get target peer's websocket
+    target_peer = room["peers"].get(target_peer_id)
+    if not target_peer:
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "PEER_NOT_FOUND",
+            "reason": "peer_not_found",
+            "target_peer_id": target_peer_id,
+        }))
+        return
+
+    target_websocket = target_peer.get("websocket") if isinstance(target_peer, dict) else target_peer
+
+    try:
+        # Relay as mesh_offer to target
+        await target_websocket.send(json.dumps({
+            "type": "mesh_offer",
+            "from_peer_id": from_peer_id,
+            "offer": offer,
+        }))
+        METRICS["total_messages"] += 1
+        logging.info(f"[MESH_CONNECT] Relayed offer from {from_peer_id} to {target_peer_id}")
+    except Exception as e:
+        logging.error(f"Failed to relay mesh_connect: {e}")
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "DELIVERY_FAILED",
+            "message": f"Failed to deliver mesh offer to {target_peer_id}"
+        }))
+
+
+async def handle_mesh_answer(websocket, message):
+    """Handle mesh connection answer (relay answer to original peer).
+
+    Message format:
+    {
+        "type": "mesh_answer",
+        "from_peer_id": "worker-2",
+        "target_peer_id": "worker-3",
+        "answer": {
+            "sdp": "...",
+            "type": "answer"
+        }
+    }
+    """
+    from_peer_id = message.get("from_peer_id")
+    target_peer_id = message.get("target_peer_id")
+    answer = message.get("answer")
+
+    if not all([from_peer_id, target_peer_id, answer]):
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "INVALID_MESSAGE",
+            "message": "Missing required fields: from_peer_id, target_peer_id, answer"
+        }))
+        return
+
+    # Verify sender is in a room
+    room_id = PEER_TO_ROOM.get(from_peer_id)
+    if not room_id:
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "NOT_IN_ROOM",
+            "message": "Sender not in any room"
+        }))
+        return
+
+    room = ROOMS.get(room_id)
+    if not room:
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "ROOM_NOT_FOUND",
+            "message": f"Room {room_id} not found"
+        }))
+        return
+
+    # Get target peer's websocket
+    target_peer = room["peers"].get(target_peer_id)
+    if not target_peer:
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "PEER_NOT_FOUND",
+            "message": f"Target peer {target_peer_id} not found"
+        }))
+        return
+
+    target_websocket = target_peer.get("websocket") if isinstance(target_peer, dict) else target_peer
+
+    try:
+        # Relay answer to original peer
+        await target_websocket.send(json.dumps({
+            "type": "mesh_answer",
+            "from_peer_id": from_peer_id,
+            "answer": answer,
+        }))
+        METRICS["total_messages"] += 1
+        logging.info(f"[MESH_ANSWER] Relayed answer from {from_peer_id} to {target_peer_id}")
+    except Exception as e:
+        logging.error(f"Failed to relay mesh_answer: {e}")
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "DELIVERY_FAILED",
+            "message": f"Failed to deliver mesh answer to {target_peer_id}"
+        }))
+
+
+async def handle_ice_candidate(websocket, message):
+    """Handle ICE candidate relay between peers.
+
+    Message format:
+    {
+        "type": "ice_candidate",
+        "from_peer_id": "worker-3",
+        "target_peer_id": "worker-2",
+        "candidate": {
+            "candidate": "candidate:1 1 UDP...",
+            "sdpMLineIndex": 0,
+            "sdpMid": "0"
+        }
+    }
+    """
+    from_peer_id = message.get("from_peer_id")
+    target_peer_id = message.get("target_peer_id")
+    candidate = message.get("candidate")
+
+    if not all([from_peer_id, target_peer_id, candidate]):
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "INVALID_MESSAGE",
+            "message": "Missing required fields: from_peer_id, target_peer_id, candidate"
+        }))
+        return
+
+    # Verify sender is in a room
+    room_id = PEER_TO_ROOM.get(from_peer_id)
+    if not room_id:
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "NOT_IN_ROOM",
+            "message": "Sender not in any room"
+        }))
+        return
+
+    room = ROOMS.get(room_id)
+    if not room:
+        await websocket.send(json.dumps({
+            "type": "error",
+            "code": "ROOM_NOT_FOUND",
+            "message": f"Room {room_id} not found"
+        }))
+        return
+
+    # Get target peer's websocket
+    target_peer = room["peers"].get(target_peer_id)
+    if not target_peer:
+        # Target might have disconnected - log but don't error
+        logging.warning(f"[ICE_CANDIDATE] Target peer {target_peer_id} not found in room {room_id}")
+        return
+
+    target_websocket = target_peer.get("websocket") if isinstance(target_peer, dict) else target_peer
+
+    try:
+        # Relay ICE candidate to target
+        await target_websocket.send(json.dumps({
+            "type": "ice_candidate",
+            "from_peer_id": from_peer_id,
+            "candidate": candidate,
+        }))
+        METRICS["total_messages"] += 1
+        logging.info(f"[ICE_CANDIDATE] Relayed candidate from {from_peer_id} to {target_peer_id}")
+    except Exception as e:
+        logging.error(f"Failed to relay ice_candidate: {e}")
+
+
+async def cleanup_peer(peer_id: str):
+    """Clean up peer data on disconnect.
+
+    Removes the peer from:
+    - PEER_TO_ROOM mapping
+    - Room's peers dict
+    - ROOM_ADMINS (if this peer was admin)
+
+    Also cleans up empty rooms.
+
+    Args:
+        peer_id: The ID of the peer that disconnected
+    """
+    room_id = PEER_TO_ROOM.get(peer_id)
+    if not room_id:
+        return
+
+    # Remove from PEER_TO_ROOM
+    del PEER_TO_ROOM[peer_id]
+
+    # Remove from room's peers
+    room = ROOMS.get(room_id)
+    if room and peer_id in room["peers"]:
+        del room["peers"][peer_id]
+        logging.info(f"[CLEANUP] Removed peer {peer_id} from room {room_id}")
+
+    # If this was admin, clear admin mapping
+    if ROOM_ADMINS.get(room_id) == peer_id:
+        del ROOM_ADMINS[room_id]
+        logging.info(f"[CLEANUP] Room {room_id}: admin {peer_id} disconnected")
+
+    # Clean up empty rooms
+    if room and not room["peers"]:
+        del ROOMS[room_id]
+        if room_id in ROOM_ADMINS:
+            del ROOM_ADMINS[room_id]
+        logging.info(f"[CLEANUP] Room {room_id} is now empty and removed from memory")
+
+    # Update metrics
+    METRICS["active_connections"] = sum(len(r["peers"]) for r in ROOMS.values())
+
+
 def get_room(room_id: str):
     """Fetches a room document from DynamoDB by room_id.
 
@@ -768,6 +1056,16 @@ async def handle_client(websocket):
                 elif msg_type == "peer_message":
                     await handle_peer_message(websocket, data)
 
+                # NEW: Mesh networking handlers
+                elif msg_type == "mesh_connect":
+                    await handle_mesh_connect(websocket, data)
+
+                elif msg_type == "mesh_answer":
+                    await handle_mesh_answer(websocket, data)
+
+                elif msg_type == "ice_candidate":
+                    await handle_ice_candidate(websocket, data)
+
                 # Existing: WebRTC signaling (offer/answer for backward compatibility)
                 elif msg_type in ["offer", "answer"]:
                     sender_pid = data.get('sender')
@@ -811,6 +1109,11 @@ async def handle_client(websocket):
 
     except Exception as e:
         logging.error(f"Error handling client {peer_id}: {e}")
+
+    finally:
+        # Clean up peer on disconnect
+        if peer_id:
+            await cleanup_peer(peer_id)
 
 
 def run_fastapi_server():

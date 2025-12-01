@@ -91,37 +91,42 @@ async def delete_peer(json_data: dict):
     # ROOMS[room_id]["peers"]: { Worker-3108: <Worker websocket object>, Client-1489: <Client websocket object> }
     # PEER_TO_ROOM: { Worker-3108: room-7462, Client-1489: room-7462 }
 
-    # Get room_id either directly or via peer_id lookup
     peer_id = json_data.get("peer_id")
-    room_id = PEER_TO_ROOM.get(peer_id)
-    if not room_id:
-        logging.warning(f"[DELETE] Peer {peer_id} not found in PEER_TO_ROOM mapping")
-        return {"status": "peer not found"}
 
-    room = ROOMS.get(room_id)
-    if not room:
-        logging.warning(f"[DELETE] Room {room_id} not found in ROOMS")
-        return {"status": "room not found"}
-    
-    # Delete the User in Cognito.
+    # Always try to delete from Cognito first (peer_id IS the Cognito username)
+    # This ensures cleanup happens even if WebSocket disconnect already removed
+    # the peer from in-memory mappings
     try:
-        # Delete the Cognito user (peer_id IS the Cognito username)
         logging.info(f"[DELETE] Deleting Cognito user: {peer_id} from pool: {COGNITO_USER_POOL_ID}")
         cognito_client.admin_delete_user(
             UserPoolId=COGNITO_USER_POOL_ID,
             Username=peer_id
         )
         logging.info(f"[DELETE] Successfully deleted Cognito user {peer_id}")
-
-        # Remove peer from PEER_TO_ROOM mapping 
-        del PEER_TO_ROOM[peer_id]
-
-        # Remove peer from room's peers (updated for /metrics endpoint)
-        del room["peers"][peer_id]
-
+    except cognito_client.exceptions.UserNotFoundException:
+        logging.info(f"[DELETE] Cognito user {peer_id} already deleted (not found)")
     except Exception as e:
         logging.error(f"[DELETE] Failed to delete Cognito user {peer_id}: {e}")
         logging.exception("Full traceback:")
+
+    # Now clean up in-memory mappings if they still exist
+    room_id = PEER_TO_ROOM.get(peer_id)
+    if not room_id:
+        logging.debug(f"[DELETE] Peer {peer_id} not in PEER_TO_ROOM (likely already cleaned up by WebSocket disconnect)")
+        return {"status": "peer deleted from Cognito (already removed from room)"}
+
+    room = ROOMS.get(room_id)
+    if not room:
+        logging.warning(f"[DELETE] Room {room_id} not found in ROOMS")
+        return {"status": "peer deleted from Cognito (room not found)"}
+
+    # Remove peer from in-memory mappings
+    try:
+        del PEER_TO_ROOM[peer_id]
+        if peer_id in room["peers"]:
+            del room["peers"][peer_id]
+    except KeyError:
+        pass  # Already removed
 
     # If the room has no more peers, delete from memory and DynamoDB.
     if not room["peers"]:

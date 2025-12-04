@@ -24,6 +24,7 @@ import os
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Header
 from jose import jwt
+from ice_config import get_ice_servers
 
 # Setup logging.
 logging.basicConfig(level=logging.INFO)
@@ -425,6 +426,8 @@ async def handle_register(websocket, message):
             "admin_peer_id": ROOM_ADMINS.get(room_id),  # NEW: Current admin
             "peer_list": peer_list,  # NEW: Other peers in room
             "peer_metadata": peer_metadata,  # NEW: Metadata of other peers
+            "ice_servers": get_ice_servers("client"),  # NEW: STUN + TURN for client connections
+            "mesh_ice_servers": get_ice_servers("mesh"),  # NEW: STUN only for worker-to-worker
         }))
 
         logging.info(f"[REGISTERED] peer_id: {peer_id} (role: {role}) in room: {room_id}")

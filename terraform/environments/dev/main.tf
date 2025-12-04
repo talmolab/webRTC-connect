@@ -49,6 +49,12 @@ module "signaling_server" {
 
   websocket_port = var.websocket_port
   http_port      = var.http_port
+
+  # TURN server configuration
+  enable_turn   = var.enable_turn
+  turn_password = var.turn_password
+  turn_username = var.turn_username
+  turn_port     = var.turn_port
 }
 
 # Outputs

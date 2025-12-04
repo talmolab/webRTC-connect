@@ -68,6 +68,11 @@ jobs:
           TF_VAR_admin_cidr_blocks: '["0.0.0.0/0"]'
           TF_VAR_websocket_port: 8080
           TF_VAR_http_port: 8001
+          # TURN server configuration
+          TF_VAR_enable_turn: true
+          TF_VAR_turn_username: sleap
+          TF_VAR_turn_password: ${{ secrets.TF_VAR_TURN_PASSWORD }}
+          TF_VAR_turn_port: 3478
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
@@ -83,6 +88,11 @@ jobs:
           TF_VAR_admin_cidr_blocks: '["0.0.0.0/0"]'
           TF_VAR_websocket_port: 8080
           TF_VAR_http_port: 8001
+          # TURN server configuration
+          TF_VAR_enable_turn: true
+          TF_VAR_turn_username: sleap
+          TF_VAR_turn_password: ${{ secrets.TF_VAR_TURN_PASSWORD }}
+          TF_VAR_turn_port: 3478
         run: terraform apply -auto-approve tfplan
 
       - name: Terraform Output
@@ -98,6 +108,11 @@ jobs:
           TF_VAR_admin_cidr_blocks: '["0.0.0.0/0"]'
           TF_VAR_websocket_port: 8080
           TF_VAR_http_port: 8001
+          # TURN server configuration
+          TF_VAR_enable_turn: true
+          TF_VAR_turn_username: sleap
+          TF_VAR_turn_password: ${{ secrets.TF_VAR_TURN_PASSWORD }}
+          TF_VAR_turn_port: 3478
         run: |
           echo "## Deployment Successful! :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

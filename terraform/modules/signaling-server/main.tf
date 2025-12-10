@@ -181,18 +181,13 @@ resource "aws_instance" "signaling" {
   iam_instance_profile   = aws_iam_instance_profile.signaling.name
 
   user_data = templatefile("${path.module}/user-data.sh", {
-    docker_image          = var.docker_image
-    cognito_region        = var.cognito_region
-    cognito_user_pool_id  = var.cognito_user_pool_id
-    cognito_client_id     = var.cognito_app_client_id
-    websocket_port        = var.websocket_port
-    http_port             = var.http_port
-    environment           = var.environment
-    # TURN server configuration
-    enable_turn           = var.enable_turn
-    turn_password         = var.turn_password
-    turn_username         = var.turn_username
-    turn_port             = var.turn_port
+    docker_image         = var.docker_image
+    cognito_region       = var.cognito_region
+    cognito_user_pool_id = var.cognito_user_pool_id
+    cognito_client_id    = var.cognito_app_client_id
+    websocket_port       = var.websocket_port
+    http_port            = var.http_port
+    environment          = var.environment
   })
 
   lifecycle {

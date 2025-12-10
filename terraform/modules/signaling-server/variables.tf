@@ -56,3 +56,29 @@ variable "http_port" {
   type        = number
   default     = 8001
 }
+
+# TURN Server Configuration
+variable "enable_turn" {
+  description = "Enable coturn TURN server on the instance"
+  type        = bool
+  default     = true
+}
+
+variable "turn_password" {
+  description = "Password for TURN server authentication"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "turn_username" {
+  description = "Username for TURN server authentication"
+  type        = string
+  default     = "sleap"
+}
+
+variable "turn_port" {
+  description = "TURN server listening port"
+  type        = number
+  default     = 3478
+}

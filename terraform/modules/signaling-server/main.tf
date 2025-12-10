@@ -47,6 +47,42 @@ resource "aws_security_group" "signaling" {
     description = "SSH admin access"
   }
 
+  # TURN/STUN UDP port
+  dynamic "ingress" {
+    for_each = var.enable_turn ? [1] : []
+    content {
+      from_port   = var.turn_port
+      to_port     = var.turn_port
+      protocol    = "udp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "TURN/STUN UDP"
+    }
+  }
+
+  # TURN/STUN TCP port
+  dynamic "ingress" {
+    for_each = var.enable_turn ? [1] : []
+    content {
+      from_port   = var.turn_port
+      to_port     = var.turn_port
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "TURN/STUN TCP"
+    }
+  }
+
+  # TURN relay ports (UDP)
+  dynamic "ingress" {
+    for_each = var.enable_turn ? [1] : []
+    content {
+      from_port   = 49152
+      to_port     = 65535
+      protocol    = "udp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "TURN relay ports"
+    }
+  }
+
   # Allow all outbound traffic
   egress {
     from_port   = 0

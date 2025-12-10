@@ -25,6 +25,10 @@ EOF
 # Restart Docker to apply configuration
 systemctl restart docker
 
+# Get instance metadata for TURN server
+PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+
 # Pull signaling server Docker image
 docker pull ${docker_image}
 
@@ -37,6 +41,10 @@ docker run -d \
   -e COGNITO_REGION=${cognito_region} \
   -e COGNITO_USER_POOL_ID=${cognito_user_pool_id} \
   -e COGNITO_APP_CLIENT_ID=${cognito_client_id} \
+  -e TURN_HOST=$PUBLIC_IP \
+  -e TURN_PORT=${turn_port} \
+  -e TURN_USERNAME=${turn_username} \
+  -e TURN_PASSWORD=${turn_password} \
   ${docker_image}
 
 # Create health check script
@@ -48,6 +56,7 @@ if ! docker ps | grep -q sleap-rtc-signaling; then
   docker start sleap-rtc-signaling || {
     echo "$(date): Failed to start container, recreating..." >> /var/log/healthcheck.log
     docker rm sleap-rtc-signaling 2>/dev/null || true
+    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
     docker run -d \
       --name sleap-rtc-signaling \
       --restart unless-stopped \
@@ -56,6 +65,10 @@ if ! docker ps | grep -q sleap-rtc-signaling; then
       -e COGNITO_REGION=${cognito_region} \
       -e COGNITO_USER_POOL_ID=${cognito_user_pool_id} \
       -e COGNITO_APP_CLIENT_ID=${cognito_client_id} \
+      -e TURN_HOST=$PUBLIC_IP \
+      -e TURN_PORT=${turn_port} \
+      -e TURN_USERNAME=${turn_username} \
+      -e TURN_PASSWORD=${turn_password} \
       ${docker_image}
   }
 fi

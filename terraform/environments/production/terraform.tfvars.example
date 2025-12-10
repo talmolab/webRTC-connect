@@ -29,3 +29,10 @@ admin_cidr_blocks = [
 # Ports
 websocket_port = 8080
 http_port      = 8001
+
+# TURN Server Configuration
+# Enable coturn TURN server for NAT traversal
+enable_turn   = true
+turn_username = "sleap"
+turn_password = "your-secure-password-here"  # CHANGE THIS - use a strong password stored in secrets
+turn_port     = 3478

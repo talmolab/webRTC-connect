@@ -47,42 +47,6 @@ resource "aws_security_group" "signaling" {
     description = "SSH admin access"
   }
 
-  # TURN/STUN UDP port
-  dynamic "ingress" {
-    for_each = var.enable_turn ? [1] : []
-    content {
-      from_port   = var.turn_port
-      to_port     = var.turn_port
-      protocol    = "udp"
-      cidr_blocks = ["0.0.0.0/0"]
-      description = "TURN/STUN UDP"
-    }
-  }
-
-  # TURN/STUN TCP port
-  dynamic "ingress" {
-    for_each = var.enable_turn ? [1] : []
-    content {
-      from_port   = var.turn_port
-      to_port     = var.turn_port
-      protocol    = "tcp"
-      cidr_blocks = ["0.0.0.0/0"]
-      description = "TURN/STUN TCP"
-    }
-  }
-
-  # TURN relay ports (UDP)
-  dynamic "ingress" {
-    for_each = var.enable_turn ? [1] : []
-    content {
-      from_port   = 49152
-      to_port     = 65535
-      protocol    = "udp"
-      cidr_blocks = ["0.0.0.0/0"]
-      description = "TURN relay ports"
-    }
-  }
-
   # Allow all outbound traffic
   egress {
     from_port   = 0
@@ -181,18 +145,13 @@ resource "aws_instance" "signaling" {
   iam_instance_profile   = aws_iam_instance_profile.signaling.name
 
   user_data = templatefile("${path.module}/user-data.sh", {
-    docker_image          = var.docker_image
-    cognito_region        = var.cognito_region
-    cognito_user_pool_id  = var.cognito_user_pool_id
-    cognito_client_id     = var.cognito_app_client_id
-    websocket_port        = var.websocket_port
-    http_port             = var.http_port
-    environment           = var.environment
-    # TURN server configuration
-    enable_turn           = var.enable_turn
-    turn_password         = var.turn_password
-    turn_username         = var.turn_username
-    turn_port             = var.turn_port
+    docker_image         = var.docker_image
+    cognito_region       = var.cognito_region
+    cognito_user_pool_id = var.cognito_user_pool_id
+    cognito_client_id    = var.cognito_app_client_id
+    websocket_port       = var.websocket_port
+    http_port            = var.http_port
+    environment          = var.environment
   })
 
   lifecycle {

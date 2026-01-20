@@ -279,6 +279,10 @@ async def github_oauth_callback(request: GitHubCallbackRequest):
     if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="GitHub OAuth not configured")
 
+    # Debug logging
+    redirect_uri_to_use = request.redirect_uri or GITHUB_REDIRECT_URI
+    logging.info(f"[AUTH] GitHub callback - code: {request.code[:10]}..., redirect_uri: {redirect_uri_to_use}")
+
     # Exchange code for access token
     token_response = requests.post(
         "https://github.com/login/oauth/access_token",
@@ -287,11 +291,12 @@ async def github_oauth_callback(request: GitHubCallbackRequest):
             "client_id": GITHUB_CLIENT_ID,
             "client_secret": GITHUB_CLIENT_SECRET,
             "code": request.code,
-            "redirect_uri": request.redirect_uri or GITHUB_REDIRECT_URI,
+            "redirect_uri": redirect_uri_to_use,
         }
     )
 
     token_data = token_response.json()
+    logging.info(f"[AUTH] GitHub token response: {token_data}")
     if "error" in token_data:
         raise HTTPException(
             status_code=400,

@@ -10,8 +10,12 @@
 # ///
 
 import asyncio
+import base64
 import boto3
+import hashlib
+import hmac
 import requests
+import secrets
 import threading
 import time
 import json
@@ -23,7 +27,13 @@ import os
 
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Header
-from jose import jwt
+from fastapi.middleware.cors import CORSMiddleware
+from jose import jwt, jwk
+from jose.exceptions import JWTError
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
+from pydantic import BaseModel
+from typing import Optional
 from ice_config import get_ice_servers
 
 # Setup logging.
@@ -68,8 +78,61 @@ cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION)
 dynamodb = boto3.resource('dynamodb', region_name=COGNITO_REGION)
 rooms_table = dynamodb.Table('rooms')
 
+# =============================================================================
+# GitHub OAuth Configuration (New Auth System)
+# =============================================================================
+GITHUB_CLIENT_ID = os.environ.get('GITHUB_CLIENT_ID', '')
+GITHUB_CLIENT_SECRET = os.environ.get('GITHUB_CLIENT_SECRET', '')
+GITHUB_REDIRECT_URI = os.environ.get('GITHUB_REDIRECT_URI', '')
+
+# JWT Configuration for SLEAP-RTC tokens
+# Keys use '|' as newline separator for single-line env vars
+SLEAP_JWT_PRIVATE_KEY_RAW = os.environ.get('SLEAP_JWT_PRIVATE_KEY', '').replace('|', '\n')
+SLEAP_JWT_PUBLIC_KEY_RAW = os.environ.get('SLEAP_JWT_PUBLIC_KEY', '').replace('|', '\n')
+SLEAP_JWT_ALGORITHM = "RS256"
+SLEAP_JWT_ISSUER = "sleap-rtc"
+SLEAP_JWT_AUDIENCE = "sleap-rtc"
+SLEAP_JWT_EXPIRY_DAYS = 7
+
+# New DynamoDB tables for auth
+users_table = dynamodb.Table('sleap_users')
+worker_tokens_table = dynamodb.Table('sleap_worker_tokens')
+room_memberships_table = dynamodb.Table('sleap_room_memberships')
+
+# In-memory store for room invites (short-lived, no need for DynamoDB)
+ROOM_INVITES = {}  # invite_code -> {room_id, created_by, expires_at}
+
+# =============================================================================
 # FastAPI App (Room Creation + Metrics)
-app = FastAPI(title="SLEAP-RTC Signaling Server", version="2.0.0")
+# =============================================================================
+app = FastAPI(title="SLEAP-RTC Signaling Server", version="3.0.0")
+
+# Add CORS middleware for GitHub Pages dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict to your GitHub Pages domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# =============================================================================
+# Pydantic Models for Request/Response Validation
+# =============================================================================
+class GitHubCallbackRequest(BaseModel):
+    code: str
+    redirect_uri: Optional[str] = None
+
+
+class CreateTokenRequest(BaseModel):
+    room_id: str
+    worker_name: str
+    expires_in_days: Optional[int] = 7
+
+
+class JoinRoomRequest(BaseModel):
+    invite_code: str
 
 
 def verify_cognito_token(token):
@@ -84,8 +147,517 @@ def verify_cognito_token(token):
         return claims
     except jwt.JWTError as e:
         raise HTTPException(status_code=401, detail=f"Token verification failed: {e}")
-    
 
+
+# =============================================================================
+# JWT Utilities for SLEAP-RTC Authentication (2.1)
+# =============================================================================
+def generate_sleap_jwt(user_id: str, username: str) -> str:
+    """Generate a SLEAP-RTC JWT token for an authenticated user.
+
+    Args:
+        user_id: GitHub user ID
+        username: GitHub username
+
+    Returns:
+        Signed JWT token string
+    """
+    if not SLEAP_JWT_PRIVATE_KEY_RAW:
+        raise HTTPException(status_code=500, detail="JWT private key not configured")
+
+    now = datetime.utcnow()
+    payload = {
+        "sub": user_id,
+        "username": username,
+        "iat": now,
+        "exp": now + timedelta(days=SLEAP_JWT_EXPIRY_DAYS),
+        "iss": SLEAP_JWT_ISSUER,
+        "aud": SLEAP_JWT_AUDIENCE,
+    }
+
+    token = jwt.encode(
+        payload,
+        SLEAP_JWT_PRIVATE_KEY_RAW,
+        algorithm=SLEAP_JWT_ALGORITHM
+    )
+    return token
+
+
+def verify_sleap_jwt(token: str) -> dict:
+    """Verify a SLEAP-RTC JWT token.
+
+    Args:
+        token: JWT token string
+
+    Returns:
+        Decoded JWT claims
+
+    Raises:
+        HTTPException: If token is invalid or expired
+    """
+    if not SLEAP_JWT_PUBLIC_KEY_RAW:
+        raise HTTPException(status_code=500, detail="JWT public key not configured")
+
+    try:
+        claims = jwt.decode(
+            token,
+            SLEAP_JWT_PUBLIC_KEY_RAW,
+            algorithms=[SLEAP_JWT_ALGORITHM],
+            audience=SLEAP_JWT_AUDIENCE,
+            issuer=SLEAP_JWT_ISSUER
+        )
+        return claims
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+
+
+def get_user_from_auth_header(authorization: str) -> dict:
+    """Extract and verify user from Authorization header.
+
+    Args:
+        authorization: Authorization header value (Bearer <token>)
+
+    Returns:
+        JWT claims dict with user_id and username
+    """
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+    token = authorization.replace("Bearer ", "")
+    return verify_sleap_jwt(token)
+
+
+def generate_api_key() -> str:
+    """Generate a unique API key for worker authentication.
+
+    Returns:
+        API key string with 'slp_' prefix
+    """
+    # Generate 24 random bytes (192 bits) and encode as base64
+    random_bytes = secrets.token_bytes(24)
+    key = base64.urlsafe_b64encode(random_bytes).decode('utf-8').rstrip('=')
+    return f"slp_{key}"
+
+
+def generate_otp_secret() -> str:
+    """Generate a TOTP secret for P2P authentication.
+
+    Returns:
+        Base32-encoded secret (160 bits / 32 characters)
+    """
+    # Generate 20 random bytes (160 bits) for TOTP
+    random_bytes = secrets.token_bytes(20)
+    # Encode as base32 (standard for TOTP)
+    secret = base64.b32encode(random_bytes).decode('utf-8')
+    return secret
+
+
+# =============================================================================
+# GitHub OAuth Endpoints (2.2)
+# =============================================================================
+@app.post("/api/auth/github/callback")
+async def github_oauth_callback(request: GitHubCallbackRequest):
+    """Exchange GitHub OAuth code for SLEAP-RTC JWT.
+
+    This endpoint:
+    1. Exchanges the authorization code for a GitHub access token
+    2. Fetches GitHub user info
+    3. Creates/updates user in DynamoDB
+    4. Returns a SLEAP-RTC JWT
+    """
+    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="GitHub OAuth not configured")
+
+    # Exchange code for access token
+    token_response = requests.post(
+        "https://github.com/login/oauth/access_token",
+        headers={"Accept": "application/json"},
+        data={
+            "client_id": GITHUB_CLIENT_ID,
+            "client_secret": GITHUB_CLIENT_SECRET,
+            "code": request.code,
+            "redirect_uri": request.redirect_uri or GITHUB_REDIRECT_URI,
+        }
+    )
+
+    token_data = token_response.json()
+    if "error" in token_data:
+        raise HTTPException(
+            status_code=400,
+            detail=f"GitHub OAuth error: {token_data.get('error_description', token_data['error'])}"
+        )
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="No access token received from GitHub")
+
+    # Fetch GitHub user info
+    user_response = requests.get(
+        "https://api.github.com/user",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/vnd.github+json",
+        }
+    )
+
+    if user_response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to fetch GitHub user info")
+
+    github_user = user_response.json()
+    user_id = str(github_user["id"])
+    username = github_user["login"]
+    avatar_url = github_user.get("avatar_url", "")
+    email = github_user.get("email", "")
+
+    # Create/update user in DynamoDB
+    now = datetime.utcnow().isoformat()
+    try:
+        # Check if user exists
+        existing = users_table.get_item(Key={"user_id": user_id})
+
+        if "Item" in existing:
+            # Update last_login
+            users_table.update_item(
+                Key={"user_id": user_id},
+                UpdateExpression="SET last_login = :now, avatar_url = :avatar",
+                ExpressionAttributeValues={":now": now, ":avatar": avatar_url}
+            )
+        else:
+            # Create new user
+            users_table.put_item(Item={
+                "user_id": user_id,
+                "username": username,
+                "email": email,
+                "avatar_url": avatar_url,
+                "created_at": now,
+                "last_login": now,
+            })
+
+        logging.info(f"[AUTH] GitHub user logged in: {username} ({user_id})")
+
+    except Exception as e:
+        logging.error(f"[AUTH] Failed to save user: {e}")
+        # Continue anyway - user can still get JWT
+
+    # Generate SLEAP-RTC JWT
+    jwt_token = generate_sleap_jwt(user_id, username)
+
+    return {
+        "token": jwt_token,
+        "user": {
+            "user_id": user_id,
+            "username": username,
+            "avatar_url": avatar_url,
+        }
+    }
+
+
+# =============================================================================
+# Token Management Endpoints (2.3)
+# =============================================================================
+@app.post("/api/auth/token")
+async def create_worker_token(request: CreateTokenRequest, authorization: str = Header(...)):
+    """Create a new worker API token for a room.
+
+    The token is an API key (slp_xxx) for signaling server auth.
+    OTP verification uses the room's OTP secret (one per room, not per worker).
+    """
+    # Verify JWT and get user
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+    username = claims.get("username", "unknown")
+
+    # Verify user has access to the room
+    try:
+        membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": request.room_id}
+        )
+        if "Item" not in membership:
+            raise HTTPException(status_code=403, detail="You don't have access to this room")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to check room membership: {e}")
+        raise HTTPException(status_code=500, detail="Failed to verify room access")
+
+    # Generate API key (no OTP - that's per room now)
+    token_id = generate_api_key()
+    now = datetime.utcnow()
+    expires_at = (now + timedelta(days=request.expires_in_days)).isoformat() if request.expires_in_days else None
+
+    # Store token in DynamoDB (no otp_secret - it's on the room)
+    token_item = {
+        "token_id": token_id,
+        "user_id": user_id,
+        "room_id": request.room_id,
+        "worker_name": request.worker_name,
+        "created_at": now.isoformat(),
+        "expires_at": expires_at,
+        "revoked_at": None,
+    }
+
+    try:
+        worker_tokens_table.put_item(Item=token_item)
+        logging.info(f"[TOKEN] Created token for {username}: {request.worker_name} in room {request.room_id}")
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to create token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create token")
+
+    return {
+        "token_id": token_id,
+        "room_id": request.room_id,
+        "worker_name": request.worker_name,
+        "expires_at": expires_at,
+        "note": "OTP verification uses the room's OTP secret (from room creation)",
+    }
+
+
+@app.get("/api/auth/tokens")
+async def list_tokens(authorization: str = Header(...)):
+    """List all tokens owned by the authenticated user."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        response = worker_tokens_table.query(
+            IndexName="user_id-index",
+            KeyConditionExpression="user_id = :uid",
+            ExpressionAttributeValues={":uid": user_id}
+        )
+
+        # Return tokens without otp_secret
+        tokens = []
+        for item in response.get("Items", []):
+            tokens.append({
+                "token_id": item["token_id"],
+                "room_id": item["room_id"],
+                "worker_name": item["worker_name"],
+                "created_at": item["created_at"],
+                "expires_at": item.get("expires_at"),
+                "revoked_at": item.get("revoked_at"),
+                "is_active": item.get("revoked_at") is None,
+            })
+
+        return {"tokens": tokens}
+
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to list tokens: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list tokens")
+
+
+@app.delete("/api/auth/token/{token_id}")
+async def revoke_token(token_id: str, authorization: str = Header(...)):
+    """Revoke a worker token."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Get token to verify ownership
+        response = worker_tokens_table.get_item(Key={"token_id": token_id})
+        if "Item" not in response:
+            raise HTTPException(status_code=404, detail="Token not found")
+
+        token = response["Item"]
+        if token["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="You don't own this token")
+
+        # Revoke token
+        now = datetime.utcnow().isoformat()
+        worker_tokens_table.update_item(
+            Key={"token_id": token_id},
+            UpdateExpression="SET revoked_at = :now",
+            ExpressionAttributeValues={":now": now}
+        )
+
+        logging.info(f"[TOKEN] Revoked token: {token_id}")
+        return {"revoked": True, "token_id": token_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to revoke token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to revoke token")
+
+
+# =============================================================================
+# Room Management Endpoints (2.4)
+# =============================================================================
+@app.get("/api/auth/rooms")
+async def list_rooms(authorization: str = Header(...)):
+    """List all rooms the authenticated user has access to."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        response = room_memberships_table.query(
+            KeyConditionExpression="user_id = :uid",
+            ExpressionAttributeValues={":uid": user_id}
+        )
+
+        rooms = []
+        for item in response.get("Items", []):
+            rooms.append({
+                "room_id": item["room_id"],
+                "role": item["role"],
+                "joined_at": item["joined_at"],
+            })
+
+        return {"rooms": rooms}
+
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to list rooms: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list rooms")
+
+
+@app.post("/api/auth/rooms/{room_id}/invite")
+async def create_room_invite(room_id: str, authorization: str = Header(...)):
+    """Generate an invite code for a room. Only room owners can create invites."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Verify user is owner of the room
+        membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        )
+        if "Item" not in membership or membership["Item"].get("role") != "owner":
+            raise HTTPException(status_code=403, detail="Only room owners can create invites")
+
+        # Generate invite code (6 characters, 1 hour expiry)
+        invite_code = secrets.token_urlsafe(6)[:8].upper()
+        expires_at = time.time() + 3600  # 1 hour
+
+        ROOM_INVITES[invite_code] = {
+            "room_id": room_id,
+            "created_by": user_id,
+            "expires_at": expires_at,
+        }
+
+        logging.info(f"[ROOM] Created invite {invite_code} for room {room_id}")
+
+        return {
+            "invite_code": invite_code,
+            "room_id": room_id,
+            "expires_in_seconds": 3600,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to create invite: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create invite")
+
+
+@app.post("/api/auth/rooms/join")
+async def join_room(request: JoinRoomRequest, authorization: str = Header(...)):
+    """Join a room using an invite code."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    invite_code = request.invite_code.upper()
+
+    # Validate invite code
+    if invite_code not in ROOM_INVITES:
+        raise HTTPException(status_code=400, detail="Invalid invite code")
+
+    invite = ROOM_INVITES[invite_code]
+
+    if time.time() > invite["expires_at"]:
+        del ROOM_INVITES[invite_code]
+        raise HTTPException(status_code=400, detail="Invite code expired")
+
+    room_id = invite["room_id"]
+    invited_by = invite["created_by"]
+
+    try:
+        # Check if already a member
+        existing = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        )
+        if "Item" in existing:
+            return {"message": "Already a member", "room_id": room_id}
+
+        # Add membership
+        now = datetime.utcnow().isoformat()
+        room_memberships_table.put_item(Item={
+            "user_id": user_id,
+            "room_id": room_id,
+            "role": "member",
+            "invited_by": invited_by,
+            "joined_at": now,
+        })
+
+        logging.info(f"[ROOM] User {user_id} joined room {room_id}")
+
+        # Clean up used invite (optional - could allow multiple uses)
+        # del ROOM_INVITES[invite_code]
+
+        return {"message": "Joined successfully", "room_id": room_id}
+
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to join room: {e}")
+        raise HTTPException(status_code=500, detail="Failed to join room")
+
+
+@app.post("/api/auth/rooms/create")
+async def create_authenticated_room(authorization: str = Header(...)):
+    """Create a new room for an authenticated user.
+
+    This creates both the room in DynamoDB and the ownership record.
+    Also generates a single OTP secret for the room (shared by all workers).
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+    username = claims.get("username", "user")
+
+    # Generate room ID, token, and OTP secret
+    room_id = str(uuid.uuid4())[:8]
+    room_token = str(uuid.uuid4())[:6]
+    otp_secret = generate_otp_secret()  # One OTP per room, not per worker
+    expires_at = int((datetime.utcnow() + timedelta(hours=24)).timestamp())  # 24 hours TTL
+    now = datetime.utcnow().isoformat()
+
+    # Generate OTP URI for authenticator apps
+    otp_uri = f"otpauth://totp/SLEAP-RTC:{room_id}?secret={otp_secret}&issuer=SLEAP-RTC"
+
+    try:
+        # Create room in rooms table (now includes otp_secret)
+        rooms_table.put_item(Item={
+            "room_id": room_id,
+            "created_by": user_id,
+            "token": room_token,
+            "otp_secret": otp_secret,  # Room-level OTP
+            "expires_at": expires_at,
+        })
+
+        # Create ownership record
+        room_memberships_table.put_item(Item={
+            "user_id": user_id,
+            "room_id": room_id,
+            "role": "owner",
+            "invited_by": None,
+            "joined_at": now,
+        })
+
+        METRICS["rooms_created"] += 1
+        logging.info(f"[ROOM] User {user_id} created room {room_id}")
+
+        return {
+            "room_id": room_id,
+            "token": room_token,
+            "otp_secret": otp_secret,
+            "otp_uri": otp_uri,
+            "expires_at": expires_at,
+        }
+
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to create room: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create room")
+
+
+# =============================================================================
+# Legacy Endpoints (to be deprecated)
+# =============================================================================
 @app.post("/delete-peer")
 async def delete_peer(json_data: dict):
     """Deletes a peer from its room without deleting the room itself."""
@@ -311,74 +883,188 @@ async def get_metrics():
 async def handle_register(websocket, message):
     """Handles the registration of a peer in a room w/ its websocket.
 
-    Enhanced to support role and metadata for generic peer discovery.
+    Enhanced to support:
+    - Role and metadata for generic peer discovery
+    - API key authentication for workers (new auth system)
+    - JWT authentication for clients (new auth system)
+    - Legacy Cognito authentication (backward compatibility)
     """
 
-    peer_id = message.get('peer_id') # identify a peer uniquely in the room (Cognito username from /anonymous-signin)
-    room_id = message.get('room_id') # from backend API call for room identification (Zoom meeting ID)
-    token = message.get('token') # from backend API call for room joining (Zoom meeting password)
-    id_token = message.get('id_token') # from anon. Cognito sign-in (prevent peer spoofing, even anonymously)
-
-    # NEW: Optional role and metadata for generic signaling
+    peer_id = message.get('peer_id')  # identify a peer uniquely in the room
     role = message.get('role', 'peer')  # Default to 'peer' for backward compatibility
     metadata = message.get('metadata', {})  # Arbitrary application data
-    is_admin = message.get('is_admin', False)  # NEW: Admin flag for mesh networking
+    is_admin = message.get('is_admin', False)  # Admin flag for mesh networking
 
-    # Validate required fields.
-    if not all([peer_id, room_id, token, id_token]):
-        await websocket.send(json.dumps({"type": "error", "reason": "Missing required fields during registration."}))
-        return
+    # ==========================================================================
+    # Authentication: Support multiple auth methods
+    # ==========================================================================
+    api_key = message.get('api_key')  # NEW: Worker API key (slp_xxx)
+    jwt_token = message.get('jwt')  # NEW: Client JWT token
+    id_token = message.get('id_token')  # LEGACY: Cognito ID token
+    room_id = message.get('room_id')  # Room ID (not needed for API key auth)
+    token = message.get('token')  # Room password (not needed for API key auth)
 
-    # Verify Cognito ID token (passed from peer Cognito anonymous sign-in).
-    try:
-        claims = verify_cognito_token(id_token)
-        uid = claims["sub"]  # user ID from Cognito ID token
-    except Exception as e:
-        logging.error(f"Token verification failed: {e}")
-        await websocket.send(json.dumps({"error": "Invalid token"}))
-        return
+    uid = None
+    room_data = None
 
-    # Can now fetch prev. created DynamoDB room document.
-    try:
-        # doc = db.collection("rooms").document(room_id).get()
+    # --------------------------------------------------------------------------
+    # Path 1: API Key Authentication (Workers - New Auth System)
+    # --------------------------------------------------------------------------
+    if api_key and api_key.startswith('slp_'):
+        logging.info(f"[REGISTER] Attempting API key auth for worker")
+        try:
+            # Look up token in DynamoDB
+            token_response = worker_tokens_table.get_item(Key={"token_id": api_key})
+            if "Item" not in token_response:
+                await websocket.send(json.dumps({"type": "error", "reason": "Invalid API key"}))
+                return
+
+            token_data = token_response["Item"]
+
+            # Check if token is revoked
+            if token_data.get("revoked_at"):
+                await websocket.send(json.dumps({"type": "error", "reason": "Token revoked"}))
+                return
+
+            # Check if token is expired
+            if token_data.get("expires_at"):
+                expires_at = datetime.fromisoformat(token_data["expires_at"])
+                if datetime.utcnow() > expires_at:
+                    await websocket.send(json.dumps({"type": "error", "reason": "Token expired"}))
+                    return
+
+            # Extract room_id from token
+            room_id = token_data["room_id"]
+            uid = token_data["user_id"]
+            peer_id = peer_id or f"worker-{token_data['worker_name']}-{uuid.uuid4().hex[:4]}"
+
+            # Get room data
+            response = rooms_table.get_item(Key={"room_id": room_id})
+            room_data = response.get('Item')
+
+            if not room_data:
+                await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
+                return
+
+            # Store OTP secret in metadata for P2P verification (from room, not token)
+            metadata["_otp_secret"] = room_data.get("otp_secret")
+            metadata["_worker_name"] = token_data.get("worker_name")
+
+            logging.info(f"[REGISTER] API key auth successful for worker in room {room_id}")
+
+        except Exception as e:
+            logging.error(f"[REGISTER] API key auth failed: {e}")
+            await websocket.send(json.dumps({"type": "error", "reason": "API key validation failed"}))
+            return
+
+    # --------------------------------------------------------------------------
+    # Path 2: JWT Authentication (Clients - New Auth System)
+    # --------------------------------------------------------------------------
+    elif jwt_token:
+        logging.info(f"[REGISTER] Attempting JWT auth for client")
+        try:
+            claims = verify_sleap_jwt(jwt_token)
+            uid = claims["sub"]
+
+            # Validate room access
+            if not room_id:
+                await websocket.send(json.dumps({"type": "error", "reason": "room_id required for JWT auth"}))
+                return
+
+            # Check room membership
+            membership = room_memberships_table.get_item(
+                Key={"user_id": uid, "room_id": room_id}
+            )
+            if "Item" not in membership:
+                await websocket.send(json.dumps({"type": "error", "reason": "No access to this room"}))
+                return
+
+            # Get room data
+            response = rooms_table.get_item(Key={"room_id": room_id})
+            room_data = response.get('Item')
+
+            if not room_data:
+                await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
+                return
+
+            peer_id = peer_id or f"client-{claims.get('username', 'user')}-{uuid.uuid4().hex[:4]}"
+
+            logging.info(f"[REGISTER] JWT auth successful for {claims.get('username')} in room {room_id}")
+
+        except HTTPException as e:
+            logging.error(f"[REGISTER] JWT auth failed: {e.detail}")
+            await websocket.send(json.dumps({"type": "error", "reason": str(e.detail)}))
+            return
+        except Exception as e:
+            logging.error(f"[REGISTER] JWT auth failed: {e}")
+            await websocket.send(json.dumps({"type": "error", "reason": "JWT validation failed"}))
+            return
+
+    # --------------------------------------------------------------------------
+    # Path 3: Legacy Cognito Authentication (Backward Compatibility)
+    # --------------------------------------------------------------------------
+    elif id_token:
+        logging.info(f"[REGISTER] Attempting legacy Cognito auth")
+        # Validate required fields for legacy auth
+        if not all([peer_id, room_id, token, id_token]):
+            await websocket.send(json.dumps({"type": "error", "reason": "Missing required fields during registration."}))
+            return
+
+        # Verify Cognito ID token
+        try:
+            claims = verify_cognito_token(id_token)
+            uid = claims["sub"]
+        except Exception as e:
+            logging.error(f"Token verification failed: {e}")
+            await websocket.send(json.dumps({"error": "Invalid token"}))
+            return
+
+        # Get room data
         response = rooms_table.get_item(Key={"room_id": room_id})
         room_data = response.get('Item')
 
-        # Item Format: {
-        #     "room_id": room_id,
-        #     "created_by": uid, decoded ID token,
-        #     "token": token,
-        #     "expires_at": time.time() + 10 * 60
-        # }
+    # --------------------------------------------------------------------------
+    # No valid authentication provided
+    # --------------------------------------------------------------------------
+    else:
+        await websocket.send(json.dumps({
+            "type": "error",
+            "reason": "No authentication provided. Use api_key, jwt, or id_token."
+        }))
+        return
 
+    # ==========================================================================
+    # Room Validation (common for all auth paths)
+    # ==========================================================================
+    try:
         if not room_data:
             await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
             return
 
-        # If Client calls, should be using Worker's token. Vice versa.
-        if token != room_data.get("token"):
-            await websocket.send(json.dumps({"type": "error", "reason": "Invalid token"}))
-            return
+        # For legacy auth, verify room token
+        if id_token and not api_key and not jwt_token:
+            if token != room_data.get("token"):
+                await websocket.send(json.dumps({"type": "error", "reason": "Invalid token"}))
+                return
 
-        # Check room expiration.
-        if time.time() > room_data.get("expires_at"):
+        # Check room expiration
+        if time.time() > room_data.get("expires_at", float('inf')):
             await websocket.send(json.dumps({"type": "error", "reason": "Room expired"}))
             return
 
-        # 4. Cannot store peer's websocket object directly in document, so keep it in memory.
-        # Client should not be able to create a room since Worker would have already created it.
-        # Looks the same as DynamoDB document, but in memory and with a 'peers' dict.
+        # Initialize room in memory if needed
         if room_id not in ROOMS:
             ROOMS[room_id] = {
                 "created_by": uid,
-                "token": room_data["token"],
-                "expires_at": room_data["expires_at"],
+                "token": room_data.get("token"),
+                "expires_at": room_data.get("expires_at"),
                 "peers": {}
             }
-        # Compare token from request with the one stored in DynamoDB.
-        # i.e. check "Zoom meeting password" is correct. (Both peer must have same token to join the same room.)
 
-        # NEW: Store peer data object instead of just websocket
+        # =======================================================================
+        # Peer Registration (common for all auth paths)
+        # =======================================================================
+        # Store peer data object in memory
         # ROOMS[room_id]["peers"]: {
         #   Worker-3108: {websocket: <ws>, role: "worker", metadata: {...}, connected_at: timestamp}
         # }
@@ -417,18 +1103,26 @@ async def handle_register(websocket, message):
         for pid in peer_list:
             peer_metadata[pid] = ROOMS[room_id]["peers"][pid].get("metadata", {})
 
-        # Send registration confirmation to the peer with discovery info
-        await websocket.send(json.dumps({
+        # Build response with discovery info
+        response = {
             "type": "registered_auth",
             "room_id": room_id,
             "token": token,
             "peer_id": peer_id,
-            "admin_peer_id": ROOM_ADMINS.get(room_id),  # NEW: Current admin
-            "peer_list": peer_list,  # NEW: Other peers in room
-            "peer_metadata": peer_metadata,  # NEW: Metadata of other peers
-            "ice_servers": get_ice_servers("client"),  # NEW: STUN + TURN for client connections
-            "mesh_ice_servers": get_ice_servers("mesh"),  # NEW: STUN only for worker-to-worker
-        }))
+            "admin_peer_id": ROOM_ADMINS.get(room_id),  # Current admin
+            "peer_list": peer_list,  # Other peers in room
+            "peer_metadata": peer_metadata,  # Metadata of other peers
+            "ice_servers": get_ice_servers("client"),  # STUN + TURN for client connections
+            "mesh_ice_servers": get_ice_servers("mesh"),  # STUN only for worker-to-worker
+        }
+
+        # Include OTP secret for workers (for P2P authentication)
+        # Workers need this to validate TOTP codes from clients
+        if role == "worker" and metadata.get("_otp_secret"):
+            response["otp_secret"] = metadata["_otp_secret"]
+
+        # Send registration confirmation to the peer
+        await websocket.send(json.dumps(response))
 
         logging.info(f"[REGISTERED] peer_id: {peer_id} (role: {role}) in room: {room_id}")
 

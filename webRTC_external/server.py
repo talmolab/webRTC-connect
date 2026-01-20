@@ -67,14 +67,22 @@ METRICS = {
 }
 
 # AWS Cognito and DynamoDB initialization/configuration.
-COGNITO_REGION = os.environ['COGNITO_REGION']
-COGNITO_USER_POOL_ID = os.environ['COGNITO_USER_POOL_ID']
-COGNITO_APP_CLIENT_ID = os.environ['COGNITO_APP_CLIENT_ID']
-COGNITO_KEYS_URL = f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/jwks.json"
-JWKS = requests.get(COGNITO_KEYS_URL).json()["keys"]
+# Cognito is optional (legacy auth) - new auth uses GitHub OAuth
+COGNITO_REGION = os.environ.get('COGNITO_REGION', 'us-west-1')
+COGNITO_USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID', '')
+COGNITO_APP_CLIENT_ID = os.environ.get('COGNITO_APP_CLIENT_ID', '')
+
+# Only fetch Cognito JWKS if configured
+JWKS = []
+if COGNITO_USER_POOL_ID:
+    try:
+        COGNITO_KEYS_URL = f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/jwks.json"
+        JWKS = requests.get(COGNITO_KEYS_URL).json()["keys"]
+    except Exception as e:
+        logging.warning(f"Could not fetch Cognito JWKS: {e}")
 
 # Initialize AWS SDK (boto3 Python API for AWS).
-cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION)
+cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION) if COGNITO_USER_POOL_ID else None
 dynamodb = boto3.resource('dynamodb', region_name=COGNITO_REGION)
 rooms_table = dynamodb.Table('rooms')
 
@@ -136,6 +144,9 @@ class JoinRoomRequest(BaseModel):
 
 
 def verify_cognito_token(token):
+    """Verify a Cognito JWT token (legacy auth)."""
+    if not JWKS or not COGNITO_USER_POOL_ID:
+        raise HTTPException(status_code=501, detail="Cognito authentication not configured")
     try:
         claims = jwt.decode(
             token,

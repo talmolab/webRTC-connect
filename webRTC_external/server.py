@@ -763,6 +763,45 @@ async def delete_room(room_id: str, authorization: str = Header(...)):
 
 
 # =============================================================================
+# CLI Authentication Endpoints (Dashboard Auth Hub)
+# =============================================================================
+class CLIDepositRequest(BaseModel):
+    state: str
+    jwt: str
+    user: dict
+
+
+@app.post("/api/auth/cli/deposit")
+async def cli_deposit(request: CLIDepositRequest):
+    """Dashboard deposits JWT for CLI to poll.
+
+    This endpoint is called by the GitHub Pages dashboard after successful
+    OAuth authentication. The CLI polls /api/auth/cli/poll with the same
+    state parameter to retrieve the JWT.
+    """
+    state = request.state
+    jwt_token = request.jwt
+    user = request.user
+
+    # Validate state format (must be at least 16 characters)
+    if len(state) < 16:
+        raise HTTPException(status_code=400, detail="Invalid state format")
+
+    # Clean up expired tokens first
+    cleanup_expired_cli_tokens()
+
+    # Store token for CLI to poll
+    cli_pending_tokens[state] = {
+        "jwt": jwt_token,
+        "user": user,
+        "expires_at": time.time() + CLI_TOKEN_TTL
+    }
+
+    logging.info(f"[CLI_AUTH] Token deposited for state: {state[:8]}...")
+    return {"status": "ok"}
+
+
+# =============================================================================
 # Legacy Endpoints (to be deprecated)
 # =============================================================================
 @app.post("/delete-peer")

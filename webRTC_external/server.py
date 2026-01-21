@@ -143,6 +143,10 @@ class JoinRoomRequest(BaseModel):
     invite_code: str
 
 
+class CreateRoomRequest(BaseModel):
+    name: Optional[str] = None
+
+
 def verify_cognito_token(token):
     """Verify a Cognito JWT token (legacy auth)."""
     if not JWKS or not COGNITO_USER_POOL_ID:
@@ -620,8 +624,11 @@ async def join_room(request: JoinRoomRequest, authorization: str = Header(...)):
         raise HTTPException(status_code=500, detail="Failed to join room")
 
 
-@app.post("/api/auth/rooms/create")
-async def create_authenticated_room(authorization: str = Header(...)):
+@app.post("/api/auth/rooms")
+async def create_authenticated_room(
+    request: CreateRoomRequest = None,
+    authorization: str = Header(...)
+):
     """Create a new room for an authenticated user.
 
     This creates both the room in DynamoDB and the ownership record.
@@ -630,6 +637,9 @@ async def create_authenticated_room(authorization: str = Header(...)):
     claims = get_user_from_auth_header(authorization)
     user_id = claims["sub"]
     username = claims.get("username", "user")
+
+    # Get optional room name from request
+    room_name = request.name if request else None
 
     # Generate room ID, token, and OTP secret
     room_id = str(uuid.uuid4())[:8]
@@ -643,13 +653,16 @@ async def create_authenticated_room(authorization: str = Header(...)):
 
     try:
         # Create room in rooms table (now includes otp_secret)
-        rooms_table.put_item(Item={
+        room_item = {
             "room_id": room_id,
             "created_by": user_id,
             "token": room_token,
             "otp_secret": otp_secret,  # Room-level OTP
             "expires_at": expires_at,
-        })
+        }
+        if room_name:
+            room_item["name"] = room_name
+        rooms_table.put_item(Item=room_item)
 
         # Create ownership record
         room_memberships_table.put_item(Item={
@@ -665,7 +678,8 @@ async def create_authenticated_room(authorization: str = Header(...)):
 
         return {
             "room_id": room_id,
-            "token": room_token,
+            "room_token": room_token,
+            "name": room_name,
             "otp_secret": otp_secret,
             "otp_uri": otp_uri,
             "expires_at": expires_at,

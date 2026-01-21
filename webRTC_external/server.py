@@ -690,6 +690,65 @@ async def create_authenticated_room(
         raise HTTPException(status_code=500, detail="Failed to create room")
 
 
+@app.delete("/api/auth/rooms/{room_id}")
+async def delete_room(room_id: str, authorization: str = Header(...)):
+    """Delete a room and all associated data.
+
+    Only the room owner can delete a room. This will:
+    1. Delete the room from the rooms table
+    2. Delete all membership records for this room
+    3. Delete all worker tokens for this room
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Verify user is the owner of this room
+        membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        ).get("Item")
+
+        if not membership:
+            raise HTTPException(status_code=404, detail="Room not found or you don't have access")
+
+        if membership.get("role") != "owner":
+            raise HTTPException(status_code=403, detail="Only the room owner can delete a room")
+
+        # 1. Delete all memberships for this room (query by room_id GSI)
+        memberships_response = room_memberships_table.query(
+            IndexName="room_id-index",
+            KeyConditionExpression="room_id = :rid",
+            ExpressionAttributeValues={":rid": room_id}
+        )
+        for item in memberships_response.get("Items", []):
+            room_memberships_table.delete_item(
+                Key={"user_id": item["user_id"], "room_id": room_id}
+            )
+
+        # 2. Delete all tokens for this room (query by room_id GSI)
+        tokens_response = worker_tokens_table.query(
+            IndexName="room_id-index",
+            KeyConditionExpression="room_id = :rid",
+            ExpressionAttributeValues={":rid": room_id}
+        )
+        for item in tokens_response.get("Items", []):
+            worker_tokens_table.delete_item(
+                Key={"token_id": item["token_id"]}
+            )
+
+        # 3. Delete the room itself
+        rooms_table.delete_item(Key={"room_id": room_id})
+
+        logging.info(f"[ROOM] User {user_id} deleted room {room_id}")
+        return {"status": "deleted", "room_id": room_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to delete room: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete room")
+
+
 # =============================================================================
 # Legacy Endpoints (to be deprecated)
 # =============================================================================

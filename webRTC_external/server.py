@@ -110,6 +110,19 @@ room_memberships_table = dynamodb.Table('sleap_room_memberships')
 # In-memory store for room invites (short-lived, no need for DynamoDB)
 ROOM_INVITES = {}  # invite_code -> {room_id, created_by, expires_at}
 
+# CLI auth: pending tokens waiting to be polled
+# Structure: {state: {"jwt": str, "user": dict, "expires_at": float}}
+cli_pending_tokens: dict[str, dict] = {}
+CLI_TOKEN_TTL = 300  # 5 minutes
+
+
+def cleanup_expired_cli_tokens():
+    """Remove expired CLI pending tokens (lazy cleanup)."""
+    now = time.time()
+    expired = [k for k, v in cli_pending_tokens.items() if v["expires_at"] < now]
+    for k in expired:
+        del cli_pending_tokens[k]
+
 # =============================================================================
 # FastAPI App (Room Creation + Metrics)
 # =============================================================================

@@ -28,6 +28,7 @@ import os
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 from jose import jwt, jwk
 from jose.exceptions import JWTError
 from cryptography.hazmat.primitives import serialization
@@ -799,6 +800,34 @@ async def cli_deposit(request: CLIDepositRequest):
 
     logging.info(f"[CLI_AUTH] Token deposited for state: {state[:8]}...")
     return {"status": "ok"}
+
+
+@app.get("/api/auth/cli/poll")
+async def cli_poll(state: str):
+    """CLI polls for deposited JWT."""
+    if not state:
+        raise HTTPException(status_code=400, detail="Missing state parameter")
+
+    # Clean up expired tokens
+    cleanup_expired_cli_tokens()
+
+    # Check if token is ready
+    token_data = cli_pending_tokens.get(state)
+
+    if not token_data:
+        return JSONResponse(
+            content={"status": "pending"},
+            status_code=202
+        )
+
+    # Token found - return it and remove from store
+    del cli_pending_tokens[state]
+    logging.info(f"[CLI_AUTH] Token retrieved for state: {state[:8]}...")
+
+    return {
+        "jwt": token_data["jwt"],
+        "user": token_data["user"]
+    }
 
 
 # =============================================================================

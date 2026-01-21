@@ -207,9 +207,12 @@ def verify_sleap_jwt(token: str) -> dict:
         HTTPException: If token is invalid or expired
     """
     if not SLEAP_JWT_PUBLIC_KEY_RAW:
+        logging.error("[AUTH] JWT public key not configured")
         raise HTTPException(status_code=500, detail="JWT public key not configured")
 
     try:
+        logging.info(f"[AUTH] Verifying JWT token: {token[:50]}...")
+        logging.info(f"[AUTH] Public key length: {len(SLEAP_JWT_PUBLIC_KEY_RAW)}")
         claims = jwt.decode(
             token,
             SLEAP_JWT_PUBLIC_KEY_RAW,
@@ -217,8 +220,10 @@ def verify_sleap_jwt(token: str) -> dict:
             audience=SLEAP_JWT_AUDIENCE,
             issuer=SLEAP_JWT_ISSUER
         )
+        logging.info(f"[AUTH] JWT verified successfully for user: {claims.get('username')}")
         return claims
     except JWTError as e:
+        logging.error(f"[AUTH] JWT verification failed: {e}")
         raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
 
 

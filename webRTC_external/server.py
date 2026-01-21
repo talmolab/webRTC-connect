@@ -533,10 +533,26 @@ async def list_rooms(authorization: str = Header(...)):
             ExpressionAttributeValues={":uid": user_id}
         )
 
+        # Get room IDs from memberships
+        membership_items = response.get("Items", [])
+        room_ids = [item["room_id"] for item in membership_items]
+
+        # Fetch room details (including names) from rooms table
+        room_names = {}
+        for rid in room_ids:
+            try:
+                room_response = rooms_table.get_item(Key={"room_id": rid})
+                if "Item" in room_response:
+                    room_names[rid] = room_response["Item"].get("name")
+            except Exception:
+                pass  # Room might not exist in rooms table (legacy)
+
         rooms = []
-        for item in response.get("Items", []):
+        for item in membership_items:
+            rid = item["room_id"]
             rooms.append({
-                "room_id": item["room_id"],
+                "room_id": rid,
+                "name": room_names.get(rid),
                 "role": item["role"],
                 "joined_at": item["joined_at"],
             })

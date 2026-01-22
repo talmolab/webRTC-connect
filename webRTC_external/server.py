@@ -720,6 +720,56 @@ async def create_authenticated_room(
         raise HTTPException(status_code=500, detail="Failed to create room")
 
 
+@app.get("/api/auth/rooms/{room_id}")
+async def get_room_details(room_id: str, authorization: str = Header(...)):
+    """Get details for a specific room.
+
+    Only room owners can see sensitive details (token, OTP secret).
+    Members can see basic room info.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Check membership
+        membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        ).get("Item")
+
+        if not membership:
+            raise HTTPException(status_code=404, detail="Room not found or you don't have access")
+
+        # Get room data
+        room_data = rooms_table.get_item(Key={"room_id": room_id}).get("Item")
+        if not room_data:
+            raise HTTPException(status_code=404, detail="Room not found")
+
+        is_owner = membership.get("role") == "owner"
+
+        # Build response - only owners see sensitive data
+        response = {
+            "room_id": room_id,
+            "name": room_data.get("name"),
+            "role": membership.get("role"),
+            "joined_at": membership.get("joined_at"),
+        }
+
+        if is_owner:
+            otp_secret = room_data.get("otp_secret")
+            response["room_token"] = room_data.get("token")
+            response["otp_secret"] = otp_secret
+            if otp_secret:
+                response["otp_uri"] = f"otpauth://totp/SLEAP-RTC:{room_id}?secret={otp_secret}&issuer=SLEAP-RTC"
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to get room details: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get room details")
+
+
 @app.delete("/api/auth/rooms/{room_id}")
 async def delete_room(room_id: str, authorization: str = Header(...)):
     """Delete a room and all associated data.

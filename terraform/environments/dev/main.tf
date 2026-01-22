@@ -55,6 +55,20 @@ module "signaling_server" {
   turn_password = var.turn_password
   turn_username = var.turn_username
   turn_port     = var.turn_port
+
+  # HTTPS configuration (DuckDNS + Let's Encrypt via Caddy)
+  enable_https      = var.enable_https
+  duckdns_subdomain = var.duckdns_subdomain
+  duckdns_token     = var.duckdns_token
+  admin_email       = var.admin_email
+
+  # GitHub OAuth configuration
+  github_client_id     = var.github_client_id
+  github_client_secret = var.github_client_secret
+
+  # JWT configuration
+  jwt_private_key = var.jwt_private_key
+  jwt_public_key  = var.jwt_public_key
 }
 
 # Outputs
@@ -76,4 +90,9 @@ output "http_url" {
 output "instance_id" {
   description = "EC2 instance ID"
   value       = module.signaling_server.instance_id
+}
+
+output "https_url" {
+  description = "HTTPS URL for signaling server (if enabled)"
+  value       = module.signaling_server.https_url
 }

@@ -18,4 +18,4 @@ RUN uv sync
 EXPOSE 8080 5000 3478/udp 3478/tcp 8001
 
 # Run the server on container startup
-# ENTRYPOINT ["uv", "run", "python3", "server.py"]
+ENTRYPOINT ["uv", "run", "python3", "server.py"]

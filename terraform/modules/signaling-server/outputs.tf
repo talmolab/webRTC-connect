@@ -27,3 +27,8 @@ output "instance_id" {
   description = "EC2 instance ID"
   value       = aws_instance.signaling.id
 }
+
+output "https_url" {
+  description = "HTTPS URL for signaling server (if enabled)"
+  value       = var.enable_https ? "https://${var.duckdns_subdomain}.duckdns.org" : null
+}

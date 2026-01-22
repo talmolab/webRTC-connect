@@ -78,3 +78,62 @@ variable "turn_port" {
   type        = number
   default     = 3478
 }
+
+# =============================================================================
+# HTTPS Configuration (DuckDNS + Let's Encrypt via Caddy)
+# =============================================================================
+
+variable "enable_https" {
+  description = "Enable HTTPS via Caddy + Let's Encrypt"
+  type        = bool
+  default     = false
+}
+
+variable "duckdns_subdomain" {
+  description = "DuckDNS subdomain (without .duckdns.org)"
+  type        = string
+  default     = ""
+}
+
+variable "duckdns_token" {
+  description = "DuckDNS API token for DNS updates"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "admin_email" {
+  description = "Email for Let's Encrypt certificate notifications"
+  type        = string
+  default     = ""
+}
+
+# =============================================================================
+# GitHub OAuth Configuration
+# =============================================================================
+
+variable "github_client_id" {
+  description = "GitHub OAuth App Client ID"
+  type        = string
+  default     = ""
+}
+
+variable "github_client_secret" {
+  description = "GitHub OAuth App Client Secret"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "jwt_private_key" {
+  description = "RSA private key for JWT signing (newlines replaced with |)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "jwt_public_key" {
+  description = "RSA public key for JWT verification (newlines replaced with |)"
+  type        = string
+  default     = ""
+}

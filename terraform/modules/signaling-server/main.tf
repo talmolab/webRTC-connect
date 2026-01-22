@@ -83,6 +83,30 @@ resource "aws_security_group" "signaling" {
     }
   }
 
+  # HTTPS access (Caddy)
+  dynamic "ingress" {
+    for_each = var.enable_https ? [1] : []
+    content {
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = var.allowed_cidr_blocks
+      description = "HTTPS"
+    }
+  }
+
+  # HTTP for Let's Encrypt ACME challenge
+  dynamic "ingress" {
+    for_each = var.enable_https ? [1] : []
+    content {
+      from_port   = 80
+      to_port     = 80
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+      description = "HTTP for ACME"
+    }
+  }
+
   # Allow all outbound traffic
   egress {
     from_port   = 0
@@ -188,6 +212,21 @@ resource "aws_instance" "signaling" {
     websocket_port       = var.websocket_port
     http_port            = var.http_port
     environment          = var.environment
+    # TURN configuration
+    turn_port     = var.turn_port
+    turn_username = var.turn_username
+    turn_password = var.turn_password
+    # HTTPS configuration
+    enable_https      = var.enable_https
+    duckdns_subdomain = var.duckdns_subdomain
+    duckdns_token     = var.duckdns_token
+    admin_email       = var.admin_email
+    # GitHub OAuth configuration
+    github_client_id     = var.github_client_id
+    github_client_secret = var.github_client_secret
+    # JWT configuration
+    jwt_private_key = var.jwt_private_key
+    jwt_public_key  = var.jwt_public_key
   })
 
   lifecycle {

@@ -464,12 +464,27 @@ async def list_tokens(authorization: str = Header(...)):
             ExpressionAttributeValues={":uid": user_id}
         )
 
-        # Return tokens without otp_secret
+        token_items = response.get("Items", [])
+
+        # Fetch room names for all unique room_ids
+        room_ids = set(item["room_id"] for item in token_items)
+        room_names = {}
+        for rid in room_ids:
+            try:
+                room_response = rooms_table.get_item(Key={"room_id": rid})
+                if "Item" in room_response:
+                    room_names[rid] = room_response["Item"].get("name")
+            except Exception:
+                pass  # Room might not exist (deleted or legacy)
+
+        # Return tokens with room_name included
         tokens = []
-        for item in response.get("Items", []):
+        for item in token_items:
+            rid = item["room_id"]
             tokens.append({
                 "token_id": item["token_id"],
-                "room_id": item["room_id"],
+                "room_id": rid,
+                "room_name": room_names.get(rid),
                 "worker_name": item["worker_name"],
                 "created_at": item["created_at"],
                 "expires_at": item.get("expires_at"),
@@ -516,6 +531,54 @@ async def revoke_token(token_id: str, authorization: str = Header(...)):
     except Exception as e:
         logging.error(f"[TOKEN] Failed to revoke token: {e}")
         raise HTTPException(status_code=500, detail="Failed to revoke token")
+
+
+@app.get("/api/auth/tokens/{token_id}/workers")
+async def get_token_workers(token_id: str, authorization: str = Header(...)):
+    """Get list of workers currently connected using this token.
+
+    Queries the in-memory WebSocket connection state to find workers
+    whose metadata contains the specified token_id.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Verify token exists and user owns it
+        response = worker_tokens_table.get_item(Key={"token_id": token_id})
+        if "Item" not in response:
+            raise HTTPException(status_code=404, detail="Token not found")
+
+        token = response["Item"]
+        if token["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="You don't own this token")
+
+        # Query in-memory ROOMS for workers using this token
+        workers = []
+        room_id = token["room_id"]
+
+        if room_id in ROOMS:
+            for peer_id, peer_data in ROOMS[room_id].get("peers", {}).items():
+                # Check if this peer is a worker using this token
+                metadata = peer_data.get("metadata", {})
+                if metadata.get("_token_id") == token_id:
+                    workers.append({
+                        "peer_id": peer_id,
+                        "connected_at": datetime.fromtimestamp(
+                            peer_data.get("connected_at", 0)
+                        ).isoformat() + "Z"
+                    })
+
+        return {
+            "workers": workers,
+            "count": len(workers)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to get token workers: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get connected workers")
 
 
 # =============================================================================
@@ -1190,6 +1253,7 @@ async def handle_register(websocket, message):
             # Store OTP secret in metadata for P2P verification (from room, not token)
             metadata["_otp_secret"] = room_data.get("otp_secret")
             metadata["_worker_name"] = token_data.get("worker_name")
+            metadata["_token_id"] = api_key  # Store token_id for dashboard worker lookup
 
             logging.info(f"[REGISTER] API key auth successful for worker in room {room_id}")
 

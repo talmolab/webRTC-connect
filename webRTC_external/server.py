@@ -97,9 +97,37 @@ GITHUB_CLIENT_SECRET = os.environ.get('GITHUB_CLIENT_SECRET', '')
 GITHUB_REDIRECT_URI = os.environ.get('GITHUB_REDIRECT_URI', '')
 
 # JWT Configuration for SLEAP-RTC tokens
-# Keys use '|' as newline separator for single-line env vars
-SLEAP_JWT_PRIVATE_KEY_RAW = os.environ.get('SLEAP_JWT_PRIVATE_KEY', '').replace('|', '\n')
-SLEAP_JWT_PUBLIC_KEY_RAW = os.environ.get('SLEAP_JWT_PUBLIC_KEY', '').replace('|', '\n')
+# Keys can be loaded from files (preferred) or env vars with '|' as newline separator
+def load_jwt_key(file_env: str, inline_env: str) -> str:
+    """Load JWT key from file or inline env var.
+
+    Args:
+        file_env: Name of env var containing file path (e.g., SLEAP_JWT_PRIVATE_KEY_FILE)
+        inline_env: Name of env var containing inline key with '|' separators
+
+    Returns:
+        Key contents as string, or empty string if not configured
+    """
+    # First, try loading from file
+    key_file = os.environ.get(file_env, '')
+    if key_file and os.path.exists(key_file):
+        try:
+            with open(key_file, 'r') as f:
+                logging.info(f"[JWT] Loaded key from file: {key_file}")
+                return f.read()
+        except Exception as e:
+            logging.error(f"[JWT] Failed to read key file {key_file}: {e}")
+
+    # Fall back to inline env var with '|' separator
+    inline_key = os.environ.get(inline_env, '')
+    if inline_key:
+        logging.info(f"[JWT] Loaded key from inline env var: {inline_env}")
+        return inline_key.replace('|', '\n')
+
+    return ''
+
+SLEAP_JWT_PRIVATE_KEY_RAW = load_jwt_key('SLEAP_JWT_PRIVATE_KEY_FILE', 'SLEAP_JWT_PRIVATE_KEY')
+SLEAP_JWT_PUBLIC_KEY_RAW = load_jwt_key('SLEAP_JWT_PUBLIC_KEY_FILE', 'SLEAP_JWT_PUBLIC_KEY')
 SLEAP_JWT_ALGORITHM = "RS256"
 SLEAP_JWT_ISSUER = "sleap-rtc"
 SLEAP_JWT_AUDIENCE = "sleap-rtc"

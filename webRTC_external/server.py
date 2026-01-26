@@ -3,6 +3,7 @@
 #   "boto3",
 #   "fastapi",
 #   "python-jose[cryptography]",
+#   "pyotp",
 #   "requests",
 #   "uvicorn",
 #   "websockets",
@@ -36,6 +37,7 @@ from cryptography.hazmat.backends import default_backend
 from pydantic import BaseModel
 from typing import Optional
 from ice_config import get_ice_servers
+import pyotp
 
 # Setup logging.
 logging.basicConfig(level=logging.INFO)
@@ -159,6 +161,10 @@ class JoinRoomRequest(BaseModel):
 
 class CreateRoomRequest(BaseModel):
     name: Optional[str] = None
+
+
+class VerifyOTPRequest(BaseModel):
+    otp_code: str
 
 
 def verify_cognito_token(token):
@@ -349,7 +355,7 @@ async def github_oauth_callback(request: GitHubCallbackRequest):
     email = github_user.get("email", "")
 
     # Create/update user in DynamoDB
-    now = datetime.utcnow().isoformat()
+    now = datetime.utcnow().isoformat() + "Z"
     try:
         # Check if user exists
         existing = users_table.get_item(Key={"user_id": user_id})
@@ -422,7 +428,7 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
     # Generate API key (no OTP - that's per room now)
     token_id = generate_api_key()
     now = datetime.utcnow()
-    expires_at = (now + timedelta(days=request.expires_in_days)).isoformat() if request.expires_in_days else None
+    expires_at = (now + timedelta(days=request.expires_in_days)).isoformat() + "Z" if request.expires_in_days else None
 
     # Store token in DynamoDB (no otp_secret - it's on the room)
     token_item = {
@@ -430,7 +436,7 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
         "user_id": user_id,
         "room_id": request.room_id,
         "worker_name": request.worker_name,
-        "created_at": now.isoformat(),
+        "created_at": now.isoformat() + "Z",
         "expires_at": expires_at,
         "revoked_at": None,
     }
@@ -464,12 +470,27 @@ async def list_tokens(authorization: str = Header(...)):
             ExpressionAttributeValues={":uid": user_id}
         )
 
-        # Return tokens without otp_secret
+        token_items = response.get("Items", [])
+
+        # Fetch room names for all unique room_ids
+        room_ids = set(item["room_id"] for item in token_items)
+        room_names = {}
+        for rid in room_ids:
+            try:
+                room_response = rooms_table.get_item(Key={"room_id": rid})
+                if "Item" in room_response:
+                    room_names[rid] = room_response["Item"].get("name")
+            except Exception:
+                pass  # Room might not exist (deleted or legacy)
+
+        # Return tokens with room_name included
         tokens = []
-        for item in response.get("Items", []):
+        for item in token_items:
+            rid = item["room_id"]
             tokens.append({
                 "token_id": item["token_id"],
-                "room_id": item["room_id"],
+                "room_id": rid,
+                "room_name": room_names.get(rid),
                 "worker_name": item["worker_name"],
                 "created_at": item["created_at"],
                 "expires_at": item.get("expires_at"),
@@ -501,7 +522,7 @@ async def revoke_token(token_id: str, authorization: str = Header(...)):
             raise HTTPException(status_code=403, detail="You don't own this token")
 
         # Revoke token
-        now = datetime.utcnow().isoformat()
+        now = datetime.utcnow().isoformat() + "Z"
         worker_tokens_table.update_item(
             Key={"token_id": token_id},
             UpdateExpression="SET revoked_at = :now",
@@ -516,6 +537,54 @@ async def revoke_token(token_id: str, authorization: str = Header(...)):
     except Exception as e:
         logging.error(f"[TOKEN] Failed to revoke token: {e}")
         raise HTTPException(status_code=500, detail="Failed to revoke token")
+
+
+@app.get("/api/auth/tokens/{token_id}/workers")
+async def get_token_workers(token_id: str, authorization: str = Header(...)):
+    """Get list of workers currently connected using this token.
+
+    Queries the in-memory WebSocket connection state to find workers
+    whose metadata contains the specified token_id.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Verify token exists and user owns it
+        response = worker_tokens_table.get_item(Key={"token_id": token_id})
+        if "Item" not in response:
+            raise HTTPException(status_code=404, detail="Token not found")
+
+        token = response["Item"]
+        if token["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="You don't own this token")
+
+        # Query in-memory ROOMS for workers using this token
+        workers = []
+        room_id = token["room_id"]
+
+        if room_id in ROOMS:
+            for peer_id, peer_data in ROOMS[room_id].get("peers", {}).items():
+                # Check if this peer is a worker using this token
+                metadata = peer_data.get("metadata", {})
+                if metadata.get("_token_id") == token_id:
+                    workers.append({
+                        "peer_id": peer_id,
+                        "connected_at": datetime.fromtimestamp(
+                            peer_data.get("connected_at", 0)
+                        ).isoformat() + "Z"
+                    })
+
+        return {
+            "workers": workers,
+            "count": len(workers)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to get token workers: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get connected workers")
 
 
 # =============================================================================
@@ -633,7 +702,7 @@ async def join_room(request: JoinRoomRequest, authorization: str = Header(...)):
             return {"message": "Already a member", "room_id": room_id}
 
         # Add membership
-        now = datetime.utcnow().isoformat()
+        now = datetime.utcnow().isoformat() + "Z"
         room_memberships_table.put_item(Item={
             "user_id": user_id,
             "room_id": room_id,
@@ -676,7 +745,7 @@ async def create_authenticated_room(
     room_token = str(uuid.uuid4())[:6]
     otp_secret = generate_otp_secret()  # One OTP per room, not per worker
     expires_at = int((datetime.utcnow() + timedelta(hours=24)).timestamp())  # 24 hours TTL
-    now = datetime.utcnow().isoformat()
+    now = datetime.utcnow().isoformat() + "Z"
 
     # Generate OTP URI for authenticator apps
     otp_uri = f"otpauth://totp/SLEAP-RTC:{room_id}?secret={otp_secret}&issuer=SLEAP-RTC"
@@ -768,6 +837,55 @@ async def get_room_details(room_id: str, authorization: str = Header(...)):
     except Exception as e:
         logging.error(f"[ROOM] Failed to get room details: {e}")
         raise HTTPException(status_code=500, detail="Failed to get room details")
+
+
+@app.post("/api/auth/rooms/{room_id}/verify-otp")
+async def verify_otp(room_id: str, request: VerifyOTPRequest, authorization: str = Header(...)):
+    """Verify an OTP code for a room.
+
+    This is a testing endpoint to verify OTP codes are working correctly.
+    Room members can verify OTP codes for rooms they have access to.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Check membership
+        membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        ).get("Item")
+
+        if not membership:
+            raise HTTPException(status_code=404, detail="Room not found or you don't have access")
+
+        # Get room data to get OTP secret
+        room_data = rooms_table.get_item(Key={"room_id": room_id}).get("Item")
+        if not room_data:
+            raise HTTPException(status_code=404, detail="Room not found")
+
+        otp_secret = room_data.get("otp_secret")
+        if not otp_secret:
+            raise HTTPException(status_code=400, detail="Room does not have OTP configured")
+
+        # Validate OTP code format
+        otp_code = request.otp_code.strip()
+        if len(otp_code) != 6 or not otp_code.isdigit():
+            raise HTTPException(status_code=400, detail="OTP code must be exactly 6 digits")
+
+        # Verify OTP using pyotp
+        totp = pyotp.TOTP(otp_secret)
+        if totp.verify(otp_code):
+            logging.info(f"[OTP] Valid OTP verification for room {room_id} by user {user_id}")
+            return {"valid": True, "message": "OTP code is valid"}
+        else:
+            logging.info(f"[OTP] Invalid OTP verification attempt for room {room_id} by user {user_id}")
+            raise HTTPException(status_code=400, detail="Invalid OTP code")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[OTP] Failed to verify OTP: {e}")
+        raise HTTPException(status_code=500, detail="Failed to verify OTP")
 
 
 @app.delete("/api/auth/rooms/{room_id}")
@@ -1091,7 +1209,7 @@ async def health_check():
     """Health check endpoint for monitoring."""
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "version": "2.0.0"
     }
 
@@ -1111,7 +1229,7 @@ async def get_metrics():
             peers_by_role[role] = peers_by_role.get(role, 0) + 1
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "active_rooms": total_rooms,
         "active_connections": total_peers,
         "peers_by_role": peers_by_role,
@@ -1169,8 +1287,11 @@ async def handle_register(websocket, message):
 
             # Check if token is expired
             if token_data.get("expires_at"):
-                expires_at = datetime.fromisoformat(token_data["expires_at"])
-                if datetime.utcnow() > expires_at:
+                # Handle "Z" suffix - fromisoformat doesn't accept it directly
+                expires_at_str = token_data["expires_at"].replace("Z", "+00:00")
+                expires_at = datetime.fromisoformat(expires_at_str)
+                # Compare as naive datetimes (both in UTC)
+                if datetime.utcnow() > expires_at.replace(tzinfo=None):
                     await websocket.send(json.dumps({"type": "error", "reason": "Token expired"}))
                     return
 
@@ -1190,6 +1311,7 @@ async def handle_register(websocket, message):
             # Store OTP secret in metadata for P2P verification (from room, not token)
             metadata["_otp_secret"] = room_data.get("otp_secret")
             metadata["_worker_name"] = token_data.get("worker_name")
+            metadata["_token_id"] = api_key  # Store token_id for dashboard worker lookup
 
             logging.info(f"[REGISTER] API key auth successful for worker in room {room_id}")
 

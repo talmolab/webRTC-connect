@@ -14,3 +14,6 @@ requests==2.32.3
 
 # JWT handling
 python-jose[cryptography]==3.3.0
+
+# OTP verification
+pyotp==2.9.0

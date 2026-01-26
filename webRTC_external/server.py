@@ -1287,7 +1287,9 @@ async def handle_register(websocket, message):
 
             # Check if token is expired
             if token_data.get("expires_at"):
-                expires_at = datetime.fromisoformat(token_data["expires_at"])
+                # Handle "Z" suffix - fromisoformat doesn't accept it directly
+                expires_at_str = token_data["expires_at"].replace("Z", "+00:00")
+                expires_at = datetime.fromisoformat(expires_at_str)
                 if datetime.utcnow() > expires_at:
                     await websocket.send(json.dumps({"type": "error", "reason": "Token expired"}))
                     return

@@ -3,7 +3,6 @@
 #   "boto3",
 #   "fastapi",
 #   "python-jose[cryptography]",
-#   "pyotp",
 #   "requests",
 #   "uvicorn",
 #   "websockets",
@@ -37,7 +36,6 @@ from cryptography.hazmat.backends import default_backend
 from pydantic import BaseModel
 from typing import Optional
 from ice_config import get_ice_servers
-import pyotp
 
 # Setup logging.
 logging.basicConfig(level=logging.INFO)
@@ -191,10 +189,6 @@ class CreateRoomRequest(BaseModel):
     name: Optional[str] = None
 
 
-class VerifyOTPRequest(BaseModel):
-    otp_code: str
-
-
 def verify_cognito_token(token):
     """Verify a Cognito JWT token (legacy auth)."""
     if not JWKS or not COGNITO_USER_POOL_ID:
@@ -305,19 +299,6 @@ def generate_api_key() -> str:
     random_bytes = secrets.token_bytes(24)
     key = base64.urlsafe_b64encode(random_bytes).decode('utf-8').rstrip('=')
     return f"slp_{key}"
-
-
-def generate_otp_secret() -> str:
-    """Generate a TOTP secret for P2P authentication.
-
-    Returns:
-        Base32-encoded secret (160 bits / 32 characters)
-    """
-    # Generate 20 random bytes (160 bits) for TOTP
-    random_bytes = secrets.token_bytes(20)
-    # Encode as base32 (standard for TOTP)
-    secret = base64.b32encode(random_bytes).decode('utf-8')
-    return secret
 
 
 # =============================================================================
@@ -433,7 +414,6 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
     """Create a new worker API token for a room.
 
     The token is an API key (slp_xxx) for signaling server auth.
-    OTP verification uses the room's OTP secret (one per room, not per worker).
     """
     # Verify JWT and get user
     claims = get_user_from_auth_header(authorization)
@@ -453,12 +433,12 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
         logging.error(f"[TOKEN] Failed to check room membership: {e}")
         raise HTTPException(status_code=500, detail="Failed to verify room access")
 
-    # Generate API key (no OTP - that's per room now)
+    # Generate API key
     token_id = generate_api_key()
     now = datetime.utcnow()
     expires_at = (now + timedelta(days=request.expires_in_days)).isoformat() + "Z" if request.expires_in_days else None
 
-    # Store token in DynamoDB (no otp_secret - it's on the room)
+    # Store token in DynamoDB
     token_item = {
         "token_id": token_id,
         "user_id": user_id,
@@ -481,7 +461,6 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
         "room_id": request.room_id,
         "worker_name": request.worker_name,
         "expires_at": expires_at,
-        "note": "OTP verification uses the room's OTP secret (from room creation)",
     }
 
 
@@ -759,7 +738,6 @@ async def create_authenticated_room(
     """Create a new room for an authenticated user.
 
     This creates both the room in DynamoDB and the ownership record.
-    Also generates a single OTP secret for the room (shared by all workers).
     """
     claims = get_user_from_auth_header(authorization)
     user_id = claims["sub"]
@@ -768,23 +746,18 @@ async def create_authenticated_room(
     # Get optional room name from request
     room_name = request.name if request else None
 
-    # Generate room ID, token, and OTP secret
+    # Generate room ID and token
     room_id = str(uuid.uuid4())[:8]
     room_token = str(uuid.uuid4())[:6]
-    otp_secret = generate_otp_secret()  # One OTP per room, not per worker
     expires_at = int((datetime.utcnow() + timedelta(hours=24)).timestamp())  # 24 hours TTL
     now = datetime.utcnow().isoformat() + "Z"
 
-    # Generate OTP URI for authenticator apps
-    otp_uri = f"otpauth://totp/SLEAP-RTC:{room_id}?secret={otp_secret}&issuer=SLEAP-RTC"
-
     try:
-        # Create room in rooms table (now includes otp_secret)
+        # Create room in rooms table
         room_item = {
             "room_id": room_id,
             "created_by": user_id,
             "token": room_token,
-            "otp_secret": otp_secret,  # Room-level OTP
             "expires_at": expires_at,
         }
         if room_name:
@@ -807,8 +780,6 @@ async def create_authenticated_room(
             "room_id": room_id,
             "room_token": room_token,
             "name": room_name,
-            "otp_secret": otp_secret,
-            "otp_uri": otp_uri,
             "expires_at": expires_at,
         }
 
@@ -821,7 +792,7 @@ async def create_authenticated_room(
 async def get_room_details(room_id: str, authorization: str = Header(...)):
     """Get details for a specific room.
 
-    Only room owners can see sensitive details (token, OTP secret).
+    Only room owners can see sensitive details (token).
     Members can see basic room info.
     """
     claims = get_user_from_auth_header(authorization)
@@ -852,11 +823,7 @@ async def get_room_details(room_id: str, authorization: str = Header(...)):
         }
 
         if is_owner:
-            otp_secret = room_data.get("otp_secret")
             response["room_token"] = room_data.get("token")
-            response["otp_secret"] = otp_secret
-            if otp_secret:
-                response["otp_uri"] = f"otpauth://totp/SLEAP-RTC:{room_id}?secret={otp_secret}&issuer=SLEAP-RTC"
 
         return response
 
@@ -865,55 +832,6 @@ async def get_room_details(room_id: str, authorization: str = Header(...)):
     except Exception as e:
         logging.error(f"[ROOM] Failed to get room details: {e}")
         raise HTTPException(status_code=500, detail="Failed to get room details")
-
-
-@app.post("/api/auth/rooms/{room_id}/verify-otp")
-async def verify_otp(room_id: str, request: VerifyOTPRequest, authorization: str = Header(...)):
-    """Verify an OTP code for a room.
-
-    This is a testing endpoint to verify OTP codes are working correctly.
-    Room members can verify OTP codes for rooms they have access to.
-    """
-    claims = get_user_from_auth_header(authorization)
-    user_id = claims["sub"]
-
-    try:
-        # Check membership
-        membership = room_memberships_table.get_item(
-            Key={"user_id": user_id, "room_id": room_id}
-        ).get("Item")
-
-        if not membership:
-            raise HTTPException(status_code=404, detail="Room not found or you don't have access")
-
-        # Get room data to get OTP secret
-        room_data = rooms_table.get_item(Key={"room_id": room_id}).get("Item")
-        if not room_data:
-            raise HTTPException(status_code=404, detail="Room not found")
-
-        otp_secret = room_data.get("otp_secret")
-        if not otp_secret:
-            raise HTTPException(status_code=400, detail="Room does not have OTP configured")
-
-        # Validate OTP code format
-        otp_code = request.otp_code.strip()
-        if len(otp_code) != 6 or not otp_code.isdigit():
-            raise HTTPException(status_code=400, detail="OTP code must be exactly 6 digits")
-
-        # Verify OTP using pyotp
-        totp = pyotp.TOTP(otp_secret)
-        if totp.verify(otp_code):
-            logging.info(f"[OTP] Valid OTP verification for room {room_id} by user {user_id}")
-            return {"valid": True, "message": "OTP code is valid"}
-        else:
-            logging.info(f"[OTP] Invalid OTP verification attempt for room {room_id} by user {user_id}")
-            raise HTTPException(status_code=400, detail="Invalid OTP code")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.error(f"[OTP] Failed to verify OTP: {e}")
-        raise HTTPException(status_code=500, detail="Failed to verify OTP")
 
 
 @app.delete("/api/auth/rooms/{room_id}")
@@ -1336,8 +1254,6 @@ async def handle_register(websocket, message):
                 await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
                 return
 
-            # Store OTP secret in metadata for P2P verification (from room, not token)
-            metadata["_otp_secret"] = room_data.get("otp_secret")
             metadata["_worker_name"] = token_data.get("worker_name")
             metadata["_token_id"] = api_key  # Store token_id for dashboard worker lookup
 
@@ -1506,11 +1422,6 @@ async def handle_register(websocket, message):
             "ice_servers": get_ice_servers("client"),  # STUN + TURN for client connections
             "mesh_ice_servers": get_ice_servers("mesh"),  # STUN only for worker-to-worker
         }
-
-        # Include OTP secret for workers (for P2P authentication)
-        # Workers need this to validate TOTP codes from clients
-        if role == "worker" and metadata.get("_otp_secret"):
-            response["otp_secret"] = metadata["_otp_secret"]
 
         # Send registration confirmation to the peer
         await websocket.send(json.dumps(response))

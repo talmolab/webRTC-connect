@@ -97,9 +97,37 @@ GITHUB_CLIENT_SECRET = os.environ.get('GITHUB_CLIENT_SECRET', '')
 GITHUB_REDIRECT_URI = os.environ.get('GITHUB_REDIRECT_URI', '')
 
 # JWT Configuration for SLEAP-RTC tokens
-# Keys use '|' as newline separator for single-line env vars
-SLEAP_JWT_PRIVATE_KEY_RAW = os.environ.get('SLEAP_JWT_PRIVATE_KEY', '').replace('|', '\n')
-SLEAP_JWT_PUBLIC_KEY_RAW = os.environ.get('SLEAP_JWT_PUBLIC_KEY', '').replace('|', '\n')
+# Keys can be loaded from files (preferred) or env vars with '|' as newline separator
+def load_jwt_key(file_env: str, inline_env: str) -> str:
+    """Load JWT key from file or inline env var.
+
+    Args:
+        file_env: Name of env var containing file path (e.g., SLEAP_JWT_PRIVATE_KEY_FILE)
+        inline_env: Name of env var containing inline key with '|' separators
+
+    Returns:
+        Key contents as string, or empty string if not configured
+    """
+    # First, try loading from file
+    key_file = os.environ.get(file_env, '')
+    if key_file and os.path.exists(key_file):
+        try:
+            with open(key_file, 'r') as f:
+                logging.info(f"[JWT] Loaded key from file: {key_file}")
+                return f.read()
+        except Exception as e:
+            logging.error(f"[JWT] Failed to read key file {key_file}: {e}")
+
+    # Fall back to inline env var with '|' separator
+    inline_key = os.environ.get(inline_env, '')
+    if inline_key:
+        logging.info(f"[JWT] Loaded key from inline env var: {inline_env}")
+        return inline_key.replace('|', '\n')
+
+    return ''
+
+SLEAP_JWT_PRIVATE_KEY_RAW = load_jwt_key('SLEAP_JWT_PRIVATE_KEY_FILE', 'SLEAP_JWT_PRIVATE_KEY')
+SLEAP_JWT_PUBLIC_KEY_RAW = load_jwt_key('SLEAP_JWT_PUBLIC_KEY_FILE', 'SLEAP_JWT_PUBLIC_KEY')
 SLEAP_JWT_ALGORITHM = "RS256"
 SLEAP_JWT_ISSUER = "sleap-rtc"
 SLEAP_JWT_AUDIENCE = "sleap-rtc"
@@ -279,19 +307,6 @@ def generate_api_key() -> str:
     return f"slp_{key}"
 
 
-def generate_otp_secret() -> str:
-    """Generate a TOTP secret for P2P authentication.
-
-    Returns:
-        Base32-encoded secret (160 bits / 32 characters)
-    """
-    # Generate 20 random bytes (160 bits) for TOTP
-    random_bytes = secrets.token_bytes(20)
-    # Encode as base32 (standard for TOTP)
-    secret = base64.b32encode(random_bytes).decode('utf-8')
-    return secret
-
-
 # =============================================================================
 # GitHub OAuth Endpoints (2.2)
 # =============================================================================
@@ -405,7 +420,6 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
     """Create a new worker API token for a room.
 
     The token is an API key (slp_xxx) for signaling server auth.
-    OTP verification uses the room's OTP secret (one per room, not per worker).
     """
     # Verify JWT and get user
     claims = get_user_from_auth_header(authorization)
@@ -425,12 +439,12 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
         logging.error(f"[TOKEN] Failed to check room membership: {e}")
         raise HTTPException(status_code=500, detail="Failed to verify room access")
 
-    # Generate API key (no OTP - that's per room now)
+    # Generate API key
     token_id = generate_api_key()
     now = datetime.utcnow()
     expires_at = (now + timedelta(days=request.expires_in_days)).isoformat() + "Z" if request.expires_in_days else None
 
-    # Store token in DynamoDB (no otp_secret - it's on the room)
+    # Store token in DynamoDB
     token_item = {
         "token_id": token_id,
         "user_id": user_id,
@@ -453,7 +467,6 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
         "room_id": request.room_id,
         "worker_name": request.worker_name,
         "expires_at": expires_at,
-        "note": "OTP verification uses the room's OTP secret (from room creation)",
     }
 
 
@@ -731,7 +744,6 @@ async def create_authenticated_room(
     """Create a new room for an authenticated user.
 
     This creates both the room in DynamoDB and the ownership record.
-    Also generates a single OTP secret for the room (shared by all workers).
     """
     claims = get_user_from_auth_header(authorization)
     user_id = claims["sub"]
@@ -740,23 +752,18 @@ async def create_authenticated_room(
     # Get optional room name from request
     room_name = request.name if request else None
 
-    # Generate room ID, token, and OTP secret
+    # Generate room ID and token
     room_id = str(uuid.uuid4())[:8]
     room_token = str(uuid.uuid4())[:6]
-    otp_secret = generate_otp_secret()  # One OTP per room, not per worker
     expires_at = int((datetime.utcnow() + timedelta(hours=24)).timestamp())  # 24 hours TTL
     now = datetime.utcnow().isoformat() + "Z"
 
-    # Generate OTP URI for authenticator apps
-    otp_uri = f"otpauth://totp/SLEAP-RTC:{room_id}?secret={otp_secret}&issuer=SLEAP-RTC"
-
     try:
-        # Create room in rooms table (now includes otp_secret)
+        # Create room in rooms table
         room_item = {
             "room_id": room_id,
             "created_by": user_id,
             "token": room_token,
-            "otp_secret": otp_secret,  # Room-level OTP
             "expires_at": expires_at,
         }
         if room_name:
@@ -779,8 +786,6 @@ async def create_authenticated_room(
             "room_id": room_id,
             "room_token": room_token,
             "name": room_name,
-            "otp_secret": otp_secret,
-            "otp_uri": otp_uri,
             "expires_at": expires_at,
         }
 
@@ -793,7 +798,7 @@ async def create_authenticated_room(
 async def get_room_details(room_id: str, authorization: str = Header(...)):
     """Get details for a specific room.
 
-    Only room owners can see sensitive details (token, OTP secret).
+    Only room owners can see sensitive details (token).
     Members can see basic room info.
     """
     claims = get_user_from_auth_header(authorization)
@@ -824,11 +829,7 @@ async def get_room_details(room_id: str, authorization: str = Header(...)):
         }
 
         if is_owner:
-            otp_secret = room_data.get("otp_secret")
             response["room_token"] = room_data.get("token")
-            response["otp_secret"] = otp_secret
-            if otp_secret:
-                response["otp_uri"] = f"otpauth://totp/SLEAP-RTC:{room_id}?secret={otp_secret}&issuer=SLEAP-RTC"
 
         return response
 
@@ -1308,8 +1309,6 @@ async def handle_register(websocket, message):
                 await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
                 return
 
-            # Store OTP secret in metadata for P2P verification (from room, not token)
-            metadata["_otp_secret"] = room_data.get("otp_secret")
             metadata["_worker_name"] = token_data.get("worker_name")
             metadata["_token_id"] = api_key  # Store token_id for dashboard worker lookup
 
@@ -1478,11 +1477,6 @@ async def handle_register(websocket, message):
             "ice_servers": get_ice_servers("client"),  # STUN + TURN for client connections
             "mesh_ice_servers": get_ice_servers("mesh"),  # STUN only for worker-to-worker
         }
-
-        # Include OTP secret for workers (for P2P authentication)
-        # Workers need this to validate TOTP codes from clients
-        if role == "worker" and metadata.get("_otp_secret"):
-            response["otp_secret"] = metadata["_otp_secret"]
 
         # Send registration confirmation to the peer
         await websocket.send(json.dumps(response))

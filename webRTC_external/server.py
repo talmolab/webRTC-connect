@@ -1021,18 +1021,21 @@ async def list_room_members(room_id: str, authorization: str = Header(...)):
         for item in members_response.get("Items", []):
             member_user_id = item["user_id"]
 
-            # Look up username from users table
+            # Look up username and avatar from users table
             username = None
+            avatar_url = None
             try:
                 user_response = users_table.get_item(Key={"user_id": member_user_id})
                 if "Item" in user_response:
                     username = user_response["Item"].get("username")
+                    avatar_url = user_response["Item"].get("avatar_url")
             except Exception:
-                pass  # Username lookup failed, leave as None
+                pass  # User lookup failed, leave as None
 
             members.append({
                 "user_id": member_user_id,
                 "username": username,
+                "avatar_url": avatar_url,
                 "role": item.get("role"),
                 "joined_at": item.get("joined_at"),
             })

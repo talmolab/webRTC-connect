@@ -34,7 +34,7 @@ from jose import jwt, jwk
 from jose.exceptions import JWTError
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from ice_config import get_ice_servers
 import pyotp
@@ -189,6 +189,10 @@ class JoinRoomRequest(BaseModel):
 
 class CreateRoomRequest(BaseModel):
     name: Optional[str] = None
+
+
+class UpdateRoomRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
 
 
 class VerifyOTPRequest(BaseModel):
@@ -946,6 +950,160 @@ async def delete_room(room_id: str, authorization: str = Header(...)):
     except Exception as e:
         logging.error(f"[ROOM] Failed to delete room: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete room")
+
+
+@app.patch("/api/auth/rooms/{room_id}")
+async def update_room(room_id: str, request: UpdateRoomRequest, authorization: str = Header(...)):
+    """Update room settings (currently just name).
+
+    Only the room owner can update room settings.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Verify user is owner of the room
+        membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        ).get("Item")
+
+        if not membership:
+            raise HTTPException(status_code=404, detail="Room not found or you don't have access")
+
+        if membership.get("role") != "owner":
+            raise HTTPException(status_code=403, detail="Only the room owner can update room settings")
+
+        # Update room name in rooms table
+        rooms_table.update_item(
+            Key={"room_id": room_id},
+            UpdateExpression="SET #name = :name",
+            ExpressionAttributeNames={"#name": "name"},
+            ExpressionAttributeValues={":name": request.name}
+        )
+
+        logging.info(f"[ROOM] User {user_id} updated room {room_id} name to '{request.name}'")
+
+        return {"room_id": room_id, "name": request.name}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to update room: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update room")
+
+
+@app.get("/api/auth/rooms/{room_id}/members")
+async def list_room_members(room_id: str, authorization: str = Header(...)):
+    """List all members of a room.
+
+    Any room member can view the member list.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Verify user is a member of the room
+        membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        ).get("Item")
+
+        if not membership:
+            raise HTTPException(status_code=404, detail="Room not found or you don't have access")
+
+        # Get all members using the room_id GSI
+        members_response = room_memberships_table.query(
+            IndexName="room_id-index",
+            KeyConditionExpression="room_id = :rid",
+            ExpressionAttributeValues={":rid": room_id}
+        )
+
+        members = []
+        for item in members_response.get("Items", []):
+            member_user_id = item["user_id"]
+
+            # Look up username from users table
+            username = None
+            try:
+                user_response = users_table.get_item(Key={"user_id": member_user_id})
+                if "Item" in user_response:
+                    username = user_response["Item"].get("username")
+            except Exception:
+                pass  # Username lookup failed, leave as None
+
+            members.append({
+                "user_id": member_user_id,
+                "username": username,
+                "role": item.get("role"),
+                "joined_at": item.get("joined_at"),
+            })
+
+        return {"members": members}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to list room members: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list room members")
+
+
+@app.delete("/api/auth/rooms/{room_id}/members/{target_user_id}")
+async def remove_room_member(room_id: str, target_user_id: str, authorization: str = Header(...)):
+    """Remove a member from a room.
+
+    - Room owners can remove any member except themselves
+    - Members can remove themselves (leave the room)
+    - Owners cannot remove themselves (must delete room or transfer ownership)
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Get the requesting user's membership
+        user_membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        ).get("Item")
+
+        if not user_membership:
+            raise HTTPException(status_code=404, detail="Room not found or you don't have access")
+
+        is_owner = user_membership.get("role") == "owner"
+        is_self_removal = user_id == target_user_id
+
+        # Check permissions
+        if is_self_removal and is_owner:
+            raise HTTPException(
+                status_code=400,
+                detail="Room owners cannot remove themselves. Delete the room or transfer ownership first."
+            )
+
+        if not is_self_removal and not is_owner:
+            raise HTTPException(status_code=403, detail="Only room owners can remove other members")
+
+        # Verify target user is actually a member
+        target_membership = room_memberships_table.get_item(
+            Key={"user_id": target_user_id, "room_id": room_id}
+        ).get("Item")
+
+        if not target_membership:
+            raise HTTPException(status_code=404, detail="User is not a member of this room")
+
+        # Delete the membership
+        room_memberships_table.delete_item(
+            Key={"user_id": target_user_id, "room_id": room_id}
+        )
+
+        if is_self_removal:
+            logging.info(f"[ROOM] User {user_id} left room {room_id}")
+            return {"status": "left", "room_id": room_id}
+        else:
+            logging.info(f"[ROOM] Owner {user_id} removed user {target_user_id} from room {room_id}")
+            return {"status": "removed", "room_id": room_id, "user_id": target_user_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to remove room member: {e}")
+        raise HTTPException(status_code=500, detail="Failed to remove room member")
 
 
 # =============================================================================

@@ -685,7 +685,8 @@ async def delete_inactive_tokens(
         # First, find all rooms where user is owner
         owned_rooms_response = room_memberships_table.query(
             KeyConditionExpression="user_id = :uid",
-            FilterExpression="role = :role",
+            FilterExpression="#r = :role",
+            ExpressionAttributeNames={"#r": "role"},
             ExpressionAttributeValues={":uid": user_id, ":role": "owner"}
         )
         owned_room_ids = [m["room_id"] for m in owned_rooms_response.get("Items", [])]

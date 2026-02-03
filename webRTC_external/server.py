@@ -27,7 +27,7 @@ import uuid
 import os
 
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from jose import jwt, jwk
@@ -476,8 +476,21 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
 
 
 @app.get("/api/auth/tokens")
-async def list_tokens(authorization: str = Header(...)):
-    """List all tokens owned by the authenticated user."""
+async def list_tokens(
+    authorization: str = Header(...),
+    room_id: Optional[str] = Query(None),
+    active_only: bool = Query(False),
+    sort_by: Optional[str] = Query("created_at", pattern="^(worker_name|created_at|expires_at|room_name)$"),
+    sort_order: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
+):
+    """List all tokens owned by the authenticated user.
+
+    Query params:
+        room_id: Filter by room ID
+        active_only: If true, hide revoked and expired tokens
+        sort_by: Sort field - 'worker_name', 'created_at', 'expires_at', or 'room_name'
+        sort_order: 'asc' or 'desc' (default: desc)
+    """
     claims = get_user_from_auth_header(authorization)
     user_id = claims["sub"]
 
@@ -491,9 +504,9 @@ async def list_tokens(authorization: str = Header(...)):
         token_items = response.get("Items", [])
 
         # Fetch room names for all unique room_ids
-        room_ids = set(item["room_id"] for item in token_items)
+        room_ids_set = set(item["room_id"] for item in token_items)
         room_names = {}
-        for rid in room_ids:
+        for rid in room_ids_set:
             try:
                 room_response = rooms_table.get_item(Key={"room_id": rid})
                 if "Item" in room_response:
@@ -503,8 +516,18 @@ async def list_tokens(authorization: str = Header(...)):
 
         # Return tokens with room_name included
         tokens = []
+        now = datetime.utcnow()
         for item in token_items:
             rid = item["room_id"]
+
+            # Check if token is active (not revoked and not expired)
+            is_revoked = item.get("revoked_at") is not None
+            is_expired = False
+            if item.get("expires_at"):
+                expires_str = item["expires_at"].replace("Z", "+00:00")
+                expires_dt = datetime.fromisoformat(expires_str).replace(tzinfo=None)
+                is_expired = now > expires_dt
+
             tokens.append({
                 "token_id": item["token_id"],
                 "room_id": rid,
@@ -513,8 +536,25 @@ async def list_tokens(authorization: str = Header(...)):
                 "created_at": item["created_at"],
                 "expires_at": item.get("expires_at"),
                 "revoked_at": item.get("revoked_at"),
-                "is_active": item.get("revoked_at") is None,
+                "is_active": not is_revoked and not is_expired,
             })
+
+        # Apply filters
+        if room_id:
+            tokens = [t for t in tokens if t["room_id"] == room_id]
+
+        if active_only:
+            tokens = [t for t in tokens if t["is_active"]]
+
+        # Apply sorting
+        def sort_key(t):
+            val = t.get(sort_by)
+            if val is None:
+                return (1, "")
+            return (0, val)
+
+        reverse = sort_order == "desc"
+        tokens.sort(key=sort_key, reverse=reverse)
 
         return {"tokens": tokens}
 
@@ -555,6 +595,150 @@ async def revoke_token(token_id: str, authorization: str = Header(...)):
     except Exception as e:
         logging.error(f"[TOKEN] Failed to revoke token: {e}")
         raise HTTPException(status_code=500, detail="Failed to revoke token")
+
+
+@app.delete("/api/auth/tokens/{token_id}")
+async def delete_token(token_id: str, authorization: str = Header(...)):
+    """Permanently delete a revoked or expired token.
+
+    Only inactive tokens (revoked or expired) can be deleted.
+    Caller must be the token creator OR owner of the room the token belongs to.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Get token
+        response = worker_tokens_table.get_item(Key={"token_id": token_id})
+        if "Item" not in response:
+            raise HTTPException(status_code=404, detail="Token not found")
+
+        token = response["Item"]
+        room_id = token["room_id"]
+
+        # Check if caller has permission (token creator OR room owner)
+        is_creator = token["user_id"] == user_id
+        is_room_owner = False
+
+        if not is_creator:
+            # Check if caller is room owner
+            membership = room_memberships_table.get_item(
+                Key={"user_id": user_id, "room_id": room_id}
+            )
+            if "Item" in membership and membership["Item"].get("role") == "owner":
+                is_room_owner = True
+
+        if not is_creator and not is_room_owner:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete this token")
+
+        # Check if token is inactive (revoked or expired)
+        is_revoked = token.get("revoked_at") is not None
+        is_expired = False
+        if token.get("expires_at"):
+            expires_str = token["expires_at"].replace("Z", "+00:00")
+            expires_dt = datetime.fromisoformat(expires_str).replace(tzinfo=None)
+            is_expired = datetime.utcnow() > expires_dt
+
+        if not is_revoked and not is_expired:
+            raise HTTPException(status_code=400, detail="Cannot delete active token. Revoke it first.")
+
+        # Delete token
+        worker_tokens_table.delete_item(Key={"token_id": token_id})
+
+        logging.info(f"[TOKEN] Deleted token: {token_id} by user {user_id}")
+        return {"deleted": token_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to delete token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete token")
+
+
+@app.delete("/api/auth/tokens")
+async def delete_inactive_tokens(
+    authorization: str = Header(...),
+    room_id: Optional[str] = Query(None),
+):
+    """Delete all revoked and expired tokens.
+
+    Deletes tokens where:
+    - Caller is the token creator, OR
+    - Caller is the owner of the room the token belongs to
+
+    Query params:
+        room_id: Optional filter to only delete tokens for a specific room
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Get all tokens created by this user
+        response = worker_tokens_table.query(
+            IndexName="user_id-index",
+            KeyConditionExpression="user_id = :uid",
+            ExpressionAttributeValues={":uid": user_id}
+        )
+        user_tokens = response.get("Items", [])
+
+        # Also get tokens for rooms where user is owner
+        # First, find all rooms where user is owner
+        owned_rooms_response = room_memberships_table.query(
+            KeyConditionExpression="user_id = :uid",
+            FilterExpression="#r = :role",
+            ExpressionAttributeNames={"#r": "role"},
+            ExpressionAttributeValues={":uid": user_id, ":role": "owner"}
+        )
+        owned_room_ids = [m["room_id"] for m in owned_rooms_response.get("Items", [])]
+
+        # Query tokens for owned rooms (that aren't already in user_tokens)
+        user_token_ids = {t["token_id"] for t in user_tokens}
+        owner_tokens = []
+        for rid in owned_room_ids:
+            room_tokens_response = worker_tokens_table.query(
+                IndexName="room_id-index",
+                KeyConditionExpression="room_id = :rid",
+                ExpressionAttributeValues={":rid": rid}
+            )
+            for t in room_tokens_response.get("Items", []):
+                if t["token_id"] not in user_token_ids:
+                    owner_tokens.append(t)
+
+        # Combine all tokens
+        all_tokens = user_tokens + owner_tokens
+
+        # Filter by room_id if specified
+        if room_id:
+            all_tokens = [t for t in all_tokens if t["room_id"] == room_id]
+
+        # Filter to only inactive tokens
+        now = datetime.utcnow()
+        inactive_tokens = []
+        for token in all_tokens:
+            is_revoked = token.get("revoked_at") is not None
+            is_expired = False
+            if token.get("expires_at"):
+                expires_str = token["expires_at"].replace("Z", "+00:00")
+                expires_dt = datetime.fromisoformat(expires_str).replace(tzinfo=None)
+                is_expired = now > expires_dt
+
+            if is_revoked or is_expired:
+                inactive_tokens.append(token)
+
+        # Delete all inactive tokens
+        deleted_count = 0
+        for token in inactive_tokens:
+            worker_tokens_table.delete_item(Key={"token_id": token["token_id"]})
+            deleted_count += 1
+
+        logging.info(f"[TOKEN] Bulk deleted {deleted_count} inactive tokens by user {user_id}")
+        return {"deleted_count": deleted_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to bulk delete tokens: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete tokens")
 
 
 @app.get("/api/auth/tokens/{token_id}/workers")
@@ -609,8 +793,21 @@ async def get_token_workers(token_id: str, authorization: str = Header(...)):
 # Room Management Endpoints (2.4)
 # =============================================================================
 @app.get("/api/auth/rooms")
-async def list_rooms(authorization: str = Header(...)):
-    """List all rooms the authenticated user has access to."""
+async def list_rooms(
+    authorization: str = Header(...),
+    role: Optional[str] = Query(None, pattern="^(owner|member)$"),
+    sort_by: Optional[str] = Query("joined_at", pattern="^(name|joined_at|expires_at|role)$"),
+    sort_order: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
+    search: Optional[str] = Query(None),
+):
+    """List all rooms the authenticated user has access to.
+
+    Query params:
+        role: Filter by 'owner' or 'member'
+        sort_by: Sort field - 'name', 'joined_at', 'expires_at', or 'role'
+        sort_order: 'asc' or 'desc' (default: desc)
+        search: Case-insensitive substring search on room name
+    """
     claims = get_user_from_auth_header(authorization)
     user_id = claims["sub"]
 
@@ -648,6 +845,25 @@ async def list_rooms(authorization: str = Header(...)):
                 "role": item["role"],
                 "joined_at": item["joined_at"],
             })
+
+        # Apply filters
+        if role:
+            rooms = [r for r in rooms if r["role"] == role]
+
+        if search:
+            search_lower = search.lower()
+            rooms = [r for r in rooms if r.get("name") and search_lower in r["name"].lower()]
+
+        # Apply sorting
+        def sort_key(r):
+            val = r.get(sort_by)
+            if val is None:
+                # Put None values at the end
+                return (1, "")
+            return (0, val)
+
+        reverse = sort_order == "desc"
+        rooms.sort(key=sort_key, reverse=reverse)
 
         return {"rooms": rooms}
 

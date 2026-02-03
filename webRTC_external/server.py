@@ -189,6 +189,7 @@ class JoinRoomRequest(BaseModel):
 
 class CreateRoomRequest(BaseModel):
     name: Optional[str] = None
+    expires_in_days: Optional[int] = Field(default=30, ge=1, le=365)  # None = never expires, default 30 days
 
 
 class UpdateRoomRequest(BaseModel):
@@ -623,22 +624,27 @@ async def list_rooms(authorization: str = Header(...)):
         membership_items = response.get("Items", [])
         room_ids = [item["room_id"] for item in membership_items]
 
-        # Fetch room details (including names) from rooms table
-        room_names = {}
+        # Fetch room details (including names and expiration) from rooms table
+        room_details = {}
         for rid in room_ids:
             try:
                 room_response = rooms_table.get_item(Key={"room_id": rid})
                 if "Item" in room_response:
-                    room_names[rid] = room_response["Item"].get("name")
+                    room_details[rid] = {
+                        "name": room_response["Item"].get("name"),
+                        "expires_at": room_response["Item"].get("expires_at"),
+                    }
             except Exception:
                 pass  # Room might not exist in rooms table (legacy)
 
         rooms = []
         for item in membership_items:
             rid = item["room_id"]
+            details = room_details.get(rid, {})
             rooms.append({
                 "room_id": rid,
-                "name": room_names.get(rid),
+                "name": details.get("name"),
+                "expires_at": details.get("expires_at"),
                 "role": item["role"],
                 "joined_at": item["joined_at"],
             })
@@ -753,13 +759,20 @@ async def create_authenticated_room(
     user_id = claims["sub"]
     username = claims.get("username", "user")
 
-    # Get optional room name from request
+    # Get optional room name and expiration from request
     room_name = request.name if request else None
+    expires_in_days = request.expires_in_days if request else 30  # Default 30 days
 
     # Generate room ID and token
     room_id = str(uuid.uuid4())[:8]
     room_token = str(uuid.uuid4())[:6]
-    expires_at = int((datetime.utcnow() + timedelta(hours=24)).timestamp())  # 24 hours TTL
+
+    # Calculate expiration (None = never expires)
+    if expires_in_days is None:
+        expires_at = None
+    else:
+        expires_at = int((datetime.utcnow() + timedelta(days=expires_in_days)).timestamp())
+
     now = datetime.utcnow().isoformat() + "Z"
 
     try:
@@ -768,8 +781,9 @@ async def create_authenticated_room(
             "room_id": room_id,
             "created_by": user_id,
             "token": room_token,
-            "expires_at": expires_at,
         }
+        if expires_at is not None:
+            room_item["expires_at"] = expires_at
         if room_name:
             room_item["name"] = room_name
         rooms_table.put_item(Item=room_item)
@@ -784,7 +798,8 @@ async def create_authenticated_room(
         })
 
         METRICS["rooms_created"] += 1
-        logging.info(f"[ROOM] User {user_id} created room {room_id}")
+        expiry_info = f"expires in {expires_in_days} days" if expires_in_days else "never expires"
+        logging.info(f"[ROOM] User {user_id} created room {room_id} ({expiry_info})")
 
         return {
             "room_id": room_id,
@@ -830,10 +845,28 @@ async def get_room_details(room_id: str, authorization: str = Header(...)):
             "name": room_data.get("name"),
             "role": membership.get("role"),
             "joined_at": membership.get("joined_at"),
+            "expires_at": room_data.get("expires_at"),
         }
 
         if is_owner:
-            response["room_token"] = room_data.get("token")
+            response["token"] = room_data.get("token")
+
+            # Fetch room members for owners
+            try:
+                members_response = room_memberships_table.scan(
+                    FilterExpression="room_id = :rid",
+                    ExpressionAttributeValues={":rid": room_id}
+                )
+                response["members"] = [
+                    {
+                        "user_id": m["user_id"],
+                        "role": m["role"],
+                        "joined_at": m.get("joined_at"),
+                    }
+                    for m in members_response.get("Items", [])
+                ]
+            except Exception:
+                pass  # Members list is optional
 
         return response
 
@@ -1570,8 +1603,9 @@ async def handle_register(websocket, message):
                 await websocket.send(json.dumps({"type": "error", "reason": "Invalid token"}))
                 return
 
-        # Check room expiration
-        if time.time() > room_data.get("expires_at", float('inf')):
+        # Check room expiration (None or missing = never expires)
+        expires_at = room_data.get("expires_at")
+        if expires_at is not None and time.time() > expires_at:
             await websocket.send(json.dumps({"type": "error", "reason": "Room expired"}))
             return
 

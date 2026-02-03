@@ -27,7 +27,7 @@ import uuid
 import os
 
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from jose import jwt, jwk
@@ -476,8 +476,21 @@ async def create_worker_token(request: CreateTokenRequest, authorization: str = 
 
 
 @app.get("/api/auth/tokens")
-async def list_tokens(authorization: str = Header(...)):
-    """List all tokens owned by the authenticated user."""
+async def list_tokens(
+    authorization: str = Header(...),
+    room_id: Optional[str] = Query(None),
+    active_only: bool = Query(False),
+    sort_by: Optional[str] = Query("created_at", regex="^(worker_name|created_at|expires_at|room_name)$"),
+    sort_order: Optional[str] = Query("desc", regex="^(asc|desc)$"),
+):
+    """List all tokens owned by the authenticated user.
+
+    Query params:
+        room_id: Filter by room ID
+        active_only: If true, hide revoked and expired tokens
+        sort_by: Sort field - 'worker_name', 'created_at', 'expires_at', or 'room_name'
+        sort_order: 'asc' or 'desc' (default: desc)
+    """
     claims = get_user_from_auth_header(authorization)
     user_id = claims["sub"]
 
@@ -491,9 +504,9 @@ async def list_tokens(authorization: str = Header(...)):
         token_items = response.get("Items", [])
 
         # Fetch room names for all unique room_ids
-        room_ids = set(item["room_id"] for item in token_items)
+        room_ids_set = set(item["room_id"] for item in token_items)
         room_names = {}
-        for rid in room_ids:
+        for rid in room_ids_set:
             try:
                 room_response = rooms_table.get_item(Key={"room_id": rid})
                 if "Item" in room_response:
@@ -503,8 +516,18 @@ async def list_tokens(authorization: str = Header(...)):
 
         # Return tokens with room_name included
         tokens = []
+        now = datetime.utcnow()
         for item in token_items:
             rid = item["room_id"]
+
+            # Check if token is active (not revoked and not expired)
+            is_revoked = item.get("revoked_at") is not None
+            is_expired = False
+            if item.get("expires_at"):
+                expires_str = item["expires_at"].replace("Z", "+00:00")
+                expires_dt = datetime.fromisoformat(expires_str).replace(tzinfo=None)
+                is_expired = now > expires_dt
+
             tokens.append({
                 "token_id": item["token_id"],
                 "room_id": rid,
@@ -513,8 +536,25 @@ async def list_tokens(authorization: str = Header(...)):
                 "created_at": item["created_at"],
                 "expires_at": item.get("expires_at"),
                 "revoked_at": item.get("revoked_at"),
-                "is_active": item.get("revoked_at") is None,
+                "is_active": not is_revoked and not is_expired,
             })
+
+        # Apply filters
+        if room_id:
+            tokens = [t for t in tokens if t["room_id"] == room_id]
+
+        if active_only:
+            tokens = [t for t in tokens if t["is_active"]]
+
+        # Apply sorting
+        def sort_key(t):
+            val = t.get(sort_by)
+            if val is None:
+                return (1, "")
+            return (0, val)
+
+        reverse = sort_order == "desc"
+        tokens.sort(key=sort_key, reverse=reverse)
 
         return {"tokens": tokens}
 
@@ -609,8 +649,21 @@ async def get_token_workers(token_id: str, authorization: str = Header(...)):
 # Room Management Endpoints (2.4)
 # =============================================================================
 @app.get("/api/auth/rooms")
-async def list_rooms(authorization: str = Header(...)):
-    """List all rooms the authenticated user has access to."""
+async def list_rooms(
+    authorization: str = Header(...),
+    role: Optional[str] = Query(None, regex="^(owner|member)$"),
+    sort_by: Optional[str] = Query("joined_at", regex="^(name|joined_at|expires_at|role)$"),
+    sort_order: Optional[str] = Query("desc", regex="^(asc|desc)$"),
+    search: Optional[str] = Query(None),
+):
+    """List all rooms the authenticated user has access to.
+
+    Query params:
+        role: Filter by 'owner' or 'member'
+        sort_by: Sort field - 'name', 'joined_at', 'expires_at', or 'role'
+        sort_order: 'asc' or 'desc' (default: desc)
+        search: Case-insensitive substring search on room name
+    """
     claims = get_user_from_auth_header(authorization)
     user_id = claims["sub"]
 
@@ -648,6 +701,25 @@ async def list_rooms(authorization: str = Header(...)):
                 "role": item["role"],
                 "joined_at": item["joined_at"],
             })
+
+        # Apply filters
+        if role:
+            rooms = [r for r in rooms if r["role"] == role]
+
+        if search:
+            search_lower = search.lower()
+            rooms = [r for r in rooms if r.get("name") and search_lower in r["name"].lower()]
+
+        # Apply sorting
+        def sort_key(r):
+            val = r.get(sort_by)
+            if val is None:
+                # Put None values at the end
+                return (1, "")
+            return (0, val)
+
+        reverse = sort_order == "desc"
+        rooms.sort(key=sort_key, reverse=reverse)
 
         return {"rooms": rooms}
 

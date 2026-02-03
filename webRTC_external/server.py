@@ -480,8 +480,8 @@ async def list_tokens(
     authorization: str = Header(...),
     room_id: Optional[str] = Query(None),
     active_only: bool = Query(False),
-    sort_by: Optional[str] = Query("created_at", regex="^(worker_name|created_at|expires_at|room_name)$"),
-    sort_order: Optional[str] = Query("desc", regex="^(asc|desc)$"),
+    sort_by: Optional[str] = Query("created_at", pattern="^(worker_name|created_at|expires_at|room_name)$"),
+    sort_order: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
 ):
     """List all tokens owned by the authenticated user.
 
@@ -794,9 +794,9 @@ async def get_token_workers(token_id: str, authorization: str = Header(...)):
 @app.get("/api/auth/rooms")
 async def list_rooms(
     authorization: str = Header(...),
-    role: Optional[str] = Query(None, regex="^(owner|member)$"),
-    sort_by: Optional[str] = Query("joined_at", regex="^(name|joined_at|expires_at|role)$"),
-    sort_order: Optional[str] = Query("desc", regex="^(asc|desc)$"),
+    role: Optional[str] = Query(None, pattern="^(owner|member)$"),
+    sort_by: Optional[str] = Query("joined_at", pattern="^(name|joined_at|expires_at|role)$"),
+    sort_order: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
     search: Optional[str] = Query(None),
 ):
     """List all rooms the authenticated user has access to.

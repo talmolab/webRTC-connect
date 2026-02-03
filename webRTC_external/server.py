@@ -597,6 +597,150 @@ async def revoke_token(token_id: str, authorization: str = Header(...)):
         raise HTTPException(status_code=500, detail="Failed to revoke token")
 
 
+@app.delete("/api/auth/tokens/{token_id}")
+async def delete_token(token_id: str, authorization: str = Header(...)):
+    """Permanently delete a revoked or expired token.
+
+    Only inactive tokens (revoked or expired) can be deleted.
+    Caller must be the token creator OR owner of the room the token belongs to.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Get token
+        response = worker_tokens_table.get_item(Key={"token_id": token_id})
+        if "Item" not in response:
+            raise HTTPException(status_code=404, detail="Token not found")
+
+        token = response["Item"]
+        room_id = token["room_id"]
+
+        # Check if caller has permission (token creator OR room owner)
+        is_creator = token["user_id"] == user_id
+        is_room_owner = False
+
+        if not is_creator:
+            # Check if caller is room owner
+            membership = room_memberships_table.get_item(
+                Key={"user_id": user_id, "room_id": room_id}
+            )
+            if "Item" in membership and membership["Item"].get("role") == "owner":
+                is_room_owner = True
+
+        if not is_creator and not is_room_owner:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete this token")
+
+        # Check if token is inactive (revoked or expired)
+        is_revoked = token.get("revoked_at") is not None
+        is_expired = False
+        if token.get("expires_at"):
+            expires_str = token["expires_at"].replace("Z", "+00:00")
+            expires_dt = datetime.fromisoformat(expires_str).replace(tzinfo=None)
+            is_expired = datetime.utcnow() > expires_dt
+
+        if not is_revoked and not is_expired:
+            raise HTTPException(status_code=400, detail="Cannot delete active token. Revoke it first.")
+
+        # Delete token
+        worker_tokens_table.delete_item(Key={"token_id": token_id})
+
+        logging.info(f"[TOKEN] Deleted token: {token_id} by user {user_id}")
+        return {"deleted": token_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to delete token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete token")
+
+
+@app.delete("/api/auth/tokens")
+async def delete_inactive_tokens(
+    authorization: str = Header(...),
+    room_id: Optional[str] = Query(None),
+):
+    """Delete all revoked and expired tokens.
+
+    Deletes tokens where:
+    - Caller is the token creator, OR
+    - Caller is the owner of the room the token belongs to
+
+    Query params:
+        room_id: Optional filter to only delete tokens for a specific room
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Get all tokens created by this user
+        response = worker_tokens_table.query(
+            IndexName="user_id-index",
+            KeyConditionExpression="user_id = :uid",
+            ExpressionAttributeValues={":uid": user_id}
+        )
+        user_tokens = response.get("Items", [])
+
+        # Also get tokens for rooms where user is owner
+        # First, find all rooms where user is owner
+        owned_rooms_response = room_memberships_table.query(
+            IndexName="user_id-index",
+            KeyConditionExpression="user_id = :uid",
+            FilterExpression="role = :role",
+            ExpressionAttributeValues={":uid": user_id, ":role": "owner"}
+        )
+        owned_room_ids = [m["room_id"] for m in owned_rooms_response.get("Items", [])]
+
+        # Query tokens for owned rooms (that aren't already in user_tokens)
+        user_token_ids = {t["token_id"] for t in user_tokens}
+        owner_tokens = []
+        for rid in owned_room_ids:
+            room_tokens_response = worker_tokens_table.query(
+                IndexName="room_id-index",
+                KeyConditionExpression="room_id = :rid",
+                ExpressionAttributeValues={":rid": rid}
+            )
+            for t in room_tokens_response.get("Items", []):
+                if t["token_id"] not in user_token_ids:
+                    owner_tokens.append(t)
+
+        # Combine all tokens
+        all_tokens = user_tokens + owner_tokens
+
+        # Filter by room_id if specified
+        if room_id:
+            all_tokens = [t for t in all_tokens if t["room_id"] == room_id]
+
+        # Filter to only inactive tokens
+        now = datetime.utcnow()
+        inactive_tokens = []
+        for token in all_tokens:
+            is_revoked = token.get("revoked_at") is not None
+            is_expired = False
+            if token.get("expires_at"):
+                expires_str = token["expires_at"].replace("Z", "+00:00")
+                expires_dt = datetime.fromisoformat(expires_str).replace(tzinfo=None)
+                is_expired = now > expires_dt
+
+            if is_revoked or is_expired:
+                inactive_tokens.append(token)
+
+        # Delete all inactive tokens
+        deleted_count = 0
+        for token in inactive_tokens:
+            worker_tokens_table.delete_item(Key={"token_id": token["token_id"]})
+            deleted_count += 1
+
+        logging.info(f"[TOKEN] Bulk deleted {deleted_count} inactive tokens by user {user_id}")
+        return {"deleted_count": deleted_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[TOKEN] Failed to bulk delete tokens: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete tokens")
+
+
 @app.get("/api/auth/tokens/{token_id}/workers")
 async def get_token_workers(token_id: str, authorization: str = Header(...)):
     """Get list of workers currently connected using this token.

@@ -193,3 +193,6 @@ terraform.rc
 
 # Lock file
 .terraform.lock.hcl
+
+# Scratch folder
+scratch/

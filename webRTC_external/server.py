@@ -137,6 +137,12 @@ SLEAP_JWT_EXPIRY_DAYS = 7
 users_table = dynamodb.Table('sleap_users')
 worker_tokens_table = dynamodb.Table('sleap_worker_tokens')
 room_memberships_table = dynamodb.Table('sleap_room_memberships')
+account_keys_table = dynamodb.Table('sleap_account_keys')
+
+# 60-second in-memory cache for account key lookups
+# Structure: {key_id: {**dynamo_item, "_cache_expires_at": float}}
+_account_key_cache: dict[str, dict] = {}
+ACCOUNT_KEY_CACHE_TTL = 60  # seconds
 
 # In-memory store for room invites (short-lived, no need for DynamoDB)
 ROOM_INVITES = {}  # invite_code -> {room_id, created_by, expires_at}
@@ -198,6 +204,10 @@ class UpdateRoomRequest(BaseModel):
 
 class VerifyOTPRequest(BaseModel):
     otp_code: str
+
+
+class CreateAccountKeyRequest(BaseModel):
+    name: str
 
 
 def verify_cognito_token(token):
@@ -287,16 +297,23 @@ def verify_sleap_jwt(token: str) -> dict:
 def get_user_from_auth_header(authorization: str) -> dict:
     """Extract and verify user from Authorization header.
 
+    Supports account keys (slp_acct_...) and JWTs.
+
     Args:
         authorization: Authorization header value (Bearer <token>)
 
     Returns:
-        JWT claims dict with user_id and username
+        Dict with 'sub' (user_id) and 'username' keys
     """
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
+
+    if token.startswith("slp_acct_"):
+        item = verify_account_key(token)
+        return {"sub": item["user_id"], "username": item.get("username", "unknown")}
+
     return verify_sleap_jwt(token)
 
 
@@ -310,6 +327,60 @@ def generate_api_key() -> str:
     random_bytes = secrets.token_bytes(24)
     key = base64.urlsafe_b64encode(random_bytes).decode('utf-8').rstrip('=')
     return f"slp_{key}"
+
+
+def generate_account_key() -> str:
+    """Generate a long-lived account key for user authentication.
+
+    Returns:
+        Account key string with 'slp_acct_' prefix
+    """
+    random_bytes = secrets.token_bytes(24)
+    key = base64.urlsafe_b64encode(random_bytes).decode('utf-8').rstrip('=')
+    return f"slp_acct_{key}"
+
+
+def verify_account_key(key: str) -> dict:
+    """Verify an account key against cache then DynamoDB.
+
+    Args:
+        key: Account key string (slp_acct_...)
+
+    Returns:
+        DynamoDB item dict with user_id, username, name, etc.
+
+    Raises:
+        HTTPException: If key is invalid, revoked, or expired
+    """
+    # Check 60-second in-memory cache first
+    cached = _account_key_cache.get(key)
+    if cached and cached["_cache_expires_at"] > time.time():
+        return cached
+
+    # DynamoDB fallback
+    try:
+        response = account_keys_table.get_item(Key={"key_id": key})
+    except Exception as e:
+        logging.error(f"[ACCOUNT_KEY] DynamoDB lookup failed: {e}")
+        raise HTTPException(status_code=500, detail="Account key lookup failed")
+
+    if "Item" not in response:
+        raise HTTPException(status_code=401, detail="Invalid account key")
+
+    item = response["Item"]
+
+    if item.get("revoked_at"):
+        raise HTTPException(status_code=401, detail="Account key revoked")
+
+    if item.get("expires_at"):
+        expires_at_str = item["expires_at"].replace("Z", "+00:00")
+        expires_at = datetime.fromisoformat(expires_at_str)
+        if datetime.utcnow() > expires_at.replace(tzinfo=None):
+            raise HTTPException(status_code=401, detail="Account key expired")
+
+    # Store in cache
+    _account_key_cache[key] = {**item, "_cache_expires_at": time.time() + ACCOUNT_KEY_CACHE_TTL}
+    return item
 
 
 # =============================================================================
@@ -376,6 +447,7 @@ async def github_oauth_callback(request: GitHubCallbackRequest):
 
     # Create/update user in DynamoDB
     now = datetime.utcnow().isoformat() + "Z"
+    new_account_key = None
     try:
         # Check if user exists
         existing = users_table.get_item(Key={"user_id": user_id})
@@ -398,6 +470,23 @@ async def github_oauth_callback(request: GitHubCallbackRequest):
                 "last_login": now,
             })
 
+            # Auto-generate first account key for new users
+            try:
+                new_account_key = generate_account_key()
+                account_keys_table.put_item(Item={
+                    "key_id": new_account_key,
+                    "user_id": user_id,
+                    "username": username,
+                    "name": "default",
+                    "created_at": now,
+                    "expires_at": None,
+                    "revoked_at": None,
+                })
+                logging.info(f"[AUTH] Auto-generated account key for new user: {username}")
+            except Exception as e:
+                logging.error(f"[AUTH] Failed to create account key for new user: {e}")
+                new_account_key = None
+
         logging.info(f"[AUTH] GitHub user logged in: {username} ({user_id})")
 
     except Exception as e:
@@ -407,7 +496,7 @@ async def github_oauth_callback(request: GitHubCallbackRequest):
     # Generate SLEAP-RTC JWT
     jwt_token = generate_sleap_jwt(user_id, username)
 
-    return {
+    response = {
         "token": jwt_token,
         "user": {
             "user_id": user_id,
@@ -415,6 +504,9 @@ async def github_oauth_callback(request: GitHubCallbackRequest):
             "avatar_url": avatar_url,
         }
     }
+    if new_account_key:
+        response["account_key"] = new_account_key
+    return response
 
 
 # =============================================================================
@@ -1365,6 +1457,7 @@ class CLIDepositRequest(BaseModel):
     state: str
     jwt: str
     user: dict
+    account_key: Optional[str] = None
 
 
 @app.post("/api/auth/cli/deposit")
@@ -1387,11 +1480,14 @@ async def cli_deposit(request: CLIDepositRequest):
     cleanup_expired_cli_tokens()
 
     # Store token for CLI to poll
-    cli_pending_tokens[state] = {
+    pending = {
         "jwt": jwt_token,
         "user": user,
         "expires_at": time.time() + CLI_TOKEN_TTL
     }
+    if request.account_key:
+        pending["account_key"] = request.account_key
+    cli_pending_tokens[state] = pending
 
     logging.info(f"[CLI_AUTH] Token deposited for state: {state[:8]}...")
     return {"status": "ok"}
@@ -1419,10 +1515,118 @@ async def cli_poll(state: str):
     del cli_pending_tokens[state]
     logging.info(f"[CLI_AUTH] Token retrieved for state: {state[:8]}...")
 
-    return {
+    response = {
         "jwt": token_data["jwt"],
         "user": token_data["user"]
     }
+    if "account_key" in token_data:
+        response["account_key"] = token_data["account_key"]
+    return response
+
+
+# =============================================================================
+# Account Key Management Endpoints
+# =============================================================================
+
+@app.post("/api/auth/account-keys")
+async def create_account_key(request: CreateAccountKeyRequest, authorization: str = Header(...)):
+    """Create a named account key for the authenticated user."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+    username = claims.get("username", "unknown")
+
+    new_key = generate_account_key()
+    now = datetime.utcnow().isoformat() + "Z"
+
+    try:
+        account_keys_table.put_item(Item={
+            "key_id": new_key,
+            "user_id": user_id,
+            "username": username,
+            "name": request.name,
+            "created_at": now,
+            "expires_at": None,
+            "revoked_at": None,
+        })
+        logging.info(f"[ACCOUNT_KEY] Created key '{request.name}' for {username}")
+    except Exception as e:
+        logging.error(f"[ACCOUNT_KEY] Failed to create key: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create account key")
+
+    return {
+        "key_id": new_key,
+        "name": request.name,
+        "created_at": now,
+    }
+
+
+@app.get("/api/auth/account-keys")
+async def list_account_keys(authorization: str = Header(...)):
+    """List all account keys for the authenticated user."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        response = account_keys_table.query(
+            IndexName="user_id-index",
+            KeyConditionExpression="user_id = :uid",
+            ExpressionAttributeValues={":uid": user_id},
+        )
+        items = response.get("Items", [])
+    except Exception as e:
+        logging.error(f"[ACCOUNT_KEY] Failed to list keys: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list account keys")
+
+    return {
+        "keys": [
+            {
+                "key_id": item["key_id"],
+                "name": item.get("name", ""),
+                "created_at": item.get("created_at"),
+                "expires_at": item.get("expires_at"),
+                "revoked_at": item.get("revoked_at"),
+            }
+            for item in items
+        ]
+    }
+
+
+@app.delete("/api/auth/account-keys/{key_id}")
+async def revoke_account_key(key_id: str, authorization: str = Header(...)):
+    """Revoke an account key. Returns 404 if key belongs to another user."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    # Fetch the key and verify ownership
+    try:
+        response = account_keys_table.get_item(Key={"key_id": key_id})
+    except Exception as e:
+        logging.error(f"[ACCOUNT_KEY] Failed to fetch key for revoke: {e}")
+        raise HTTPException(status_code=500, detail="Failed to revoke account key")
+
+    if "Item" not in response:
+        raise HTTPException(status_code=404, detail="Account key not found")
+
+    item = response["Item"]
+    if item["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Account key not found")
+
+    now = datetime.utcnow().isoformat() + "Z"
+    try:
+        account_keys_table.update_item(
+            Key={"key_id": key_id},
+            UpdateExpression="SET revoked_at = :now",
+            ExpressionAttributeValues={":now": now},
+        )
+    except Exception as e:
+        logging.error(f"[ACCOUNT_KEY] Failed to revoke key: {e}")
+        raise HTTPException(status_code=500, detail="Failed to revoke account key")
+
+    # Immediately invalidate cache
+    _account_key_cache.pop(key_id, None)
+
+    logging.info(f"[ACCOUNT_KEY] Revoked key {key_id[:20]}... for user {user_id}")
+    return {"status": "revoked"}
 
 
 # =============================================================================
@@ -1678,9 +1882,50 @@ async def handle_register(websocket, message):
     room_data = None
 
     # --------------------------------------------------------------------------
+    # Path 4: Account Key Authentication (slp_acct_... - checked before Path 1)
+    # --------------------------------------------------------------------------
+    if api_key and api_key.startswith('slp_acct_'):
+        logging.info(f"[REGISTER] Attempting account key auth")
+        try:
+            key_item = verify_account_key(api_key)
+            uid = key_item["user_id"]
+
+            if not room_id:
+                await websocket.send(json.dumps({"type": "error", "reason": "room_id required for account key auth"}))
+                return
+
+            # Check room membership
+            membership = room_memberships_table.get_item(
+                Key={"user_id": uid, "room_id": room_id}
+            )
+            if "Item" not in membership:
+                await websocket.send(json.dumps({"type": "error", "reason": "No access to this room"}))
+                return
+
+            # Get room data
+            response = rooms_table.get_item(Key={"room_id": room_id})
+            room_data = response.get('Item')
+
+            if not room_data:
+                await websocket.send(json.dumps({"type": "error", "reason": "Room not found"}))
+                return
+
+            peer_id = peer_id or f"worker-{key_item.get('username', uid)}-{uuid.uuid4().hex[:4]}"
+            logging.info(f"[REGISTER] Account key auth successful for {uid} in room {room_id}")
+
+        except HTTPException as e:
+            logging.error(f"[REGISTER] Account key auth failed: {e.detail}")
+            await websocket.send(json.dumps({"type": "error", "reason": str(e.detail)}))
+            return
+        except Exception as e:
+            logging.error(f"[REGISTER] Account key auth failed: {e}")
+            await websocket.send(json.dumps({"type": "error", "reason": "Account key validation failed"}))
+            return
+
+    # --------------------------------------------------------------------------
     # Path 1: API Key Authentication (Workers - New Auth System)
     # --------------------------------------------------------------------------
-    if api_key and api_key.startswith('slp_'):
+    elif api_key and api_key.startswith('slp_'):
         logging.info(f"[REGISTER] Attempting API key auth for worker")
         try:
             # Look up token in DynamoDB

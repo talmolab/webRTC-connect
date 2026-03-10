@@ -210,6 +210,11 @@ class CreateAccountKeyRequest(BaseModel):
     name: str
 
 
+class RegisterPublicKeyRequest(BaseModel):
+    public_key: str
+    device_name: str
+
+
 def verify_cognito_token(token):
     """Verify a Cognito JWT token (legacy auth)."""
     if not JWKS or not COGNITO_USER_POOL_ID:
@@ -1627,6 +1632,168 @@ async def revoke_account_key(key_id: str, authorization: str = Header(...)):
 
     logging.info(f"[ACCOUNT_KEY] Revoked key {key_id[:20]}... for user {user_id}")
     return {"status": "revoked"}
+
+
+# =============================================================================
+# Public Key & Authorized Keys (Phase 2)
+# =============================================================================
+
+@app.post("/api/auth/public-keys")
+async def register_public_key(request: RegisterPublicKeyRequest, authorization: str = Header(...)):
+    """Register an Ed25519 public key for a device.
+
+    Stored as a Map keyed by key_id inside the user's sleap_users record.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    key_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat() + "Z"
+
+    entry = {
+        "key_id": key_id,
+        "public_key": request.public_key,
+        "device_name": request.device_name,
+        "registered_at": now,
+    }
+
+    try:
+        users_table.update_item(
+            Key={"user_id": user_id},
+            UpdateExpression="SET public_keys.#kid = :entry",
+            ExpressionAttributeNames={"#kid": key_id},
+            ExpressionAttributeValues={":entry": entry},
+            ConditionExpression="attribute_exists(public_keys)",
+        )
+    except users_table.meta.client.exceptions.ConditionalCheckFailedException:
+        # public_keys map doesn't exist yet — initialize it
+        try:
+            users_table.update_item(
+                Key={"user_id": user_id},
+                UpdateExpression="SET public_keys = :map",
+                ExpressionAttributeValues={":map": {key_id: entry}},
+            )
+        except Exception as e:
+            logging.error(f"[PUBLIC_KEY] Failed to initialize public_keys map: {e}")
+            raise HTTPException(status_code=500, detail="Failed to register public key")
+    except Exception as e:
+        logging.error(f"[PUBLIC_KEY] Failed to register public key: {e}")
+        raise HTTPException(status_code=500, detail="Failed to register public key")
+
+    logging.info(f"[PUBLIC_KEY] Registered key {key_id} device='{request.device_name}' for user {user_id}")
+    return entry
+
+
+@app.get("/api/auth/public-keys")
+async def list_public_keys(authorization: str = Header(...)):
+    """List all registered Ed25519 public keys for the authenticated user."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        response = users_table.get_item(
+            Key={"user_id": user_id},
+            ProjectionExpression="public_keys",
+        )
+    except Exception as e:
+        logging.error(f"[PUBLIC_KEY] Failed to fetch public keys: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list public keys")
+
+    public_keys_map = response.get("Item", {}).get("public_keys", {})
+    return {"public_keys": list(public_keys_map.values())}
+
+
+@app.delete("/api/auth/public-keys/{key_id}")
+async def remove_public_key(key_id: str, authorization: str = Header(...)):
+    """Remove a registered Ed25519 public key by key_id."""
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    # Verify the key exists and belongs to this user before removing
+    try:
+        response = users_table.get_item(
+            Key={"user_id": user_id},
+            ProjectionExpression="public_keys",
+        )
+    except Exception as e:
+        logging.error(f"[PUBLIC_KEY] Failed to fetch public keys for delete: {e}")
+        raise HTTPException(status_code=500, detail="Failed to remove public key")
+
+    public_keys_map = response.get("Item", {}).get("public_keys", {})
+    if key_id not in public_keys_map:
+        raise HTTPException(status_code=404, detail="Public key not found")
+
+    try:
+        users_table.update_item(
+            Key={"user_id": user_id},
+            UpdateExpression="REMOVE public_keys.#kid",
+            ExpressionAttributeNames={"#kid": key_id},
+        )
+    except Exception as e:
+        logging.error(f"[PUBLIC_KEY] Failed to remove public key {key_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to remove public key")
+
+    logging.info(f"[PUBLIC_KEY] Removed key {key_id} for user {user_id}")
+    return {"status": "removed"}
+
+
+@app.get("/api/rooms/{room_id}/authorized-keys")
+async def get_room_authorized_keys(room_id: str, authorization: str = Header(...)):
+    """Return Ed25519 public keys for all members of a room.
+
+    Used by workers during P2P authentication to verify client signatures.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Verify requester is a room member
+        membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        ).get("Item")
+
+        if not membership:
+            raise HTTPException(status_code=404, detail="Room not found or you don't have access")
+
+        # Get all room members via room_id GSI
+        members_response = room_memberships_table.query(
+            IndexName="room_id-index",
+            KeyConditionExpression="room_id = :rid",
+            ExpressionAttributeValues={":rid": room_id},
+        )
+
+        authorized_keys = []
+        for member in members_response.get("Items", []):
+            member_user_id = member["user_id"]
+
+            try:
+                user_response = users_table.get_item(
+                    Key={"user_id": member_user_id},
+                    ProjectionExpression="username, public_keys",
+                )
+                user_item = user_response.get("Item", {})
+            except Exception:
+                continue  # Skip members whose user record can't be fetched
+
+            username = user_item.get("username")
+            public_keys_map = user_item.get("public_keys", {})
+
+            for key_id, key_entry in public_keys_map.items():
+                authorized_keys.append({
+                    "user_id": member_user_id,
+                    "username": username,
+                    "key_id": key_id,
+                    "public_key": key_entry.get("public_key"),
+                    "device_name": key_entry.get("device_name"),
+                })
+
+        return {"authorized_keys": authorized_keys}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[PUBLIC_KEY] Failed to get authorized keys for room {room_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get authorized keys")
 
 
 # =============================================================================

@@ -1589,7 +1589,6 @@ async def list_account_keys(authorization: str = Header(...)):
                 "name": item.get("name", ""),
                 "created_at": item.get("created_at"),
                 "expires_at": item.get("expires_at"),
-                "revoked_at": item.get("revoked_at"),
             }
             for item in items
         ]
@@ -1616,21 +1615,16 @@ async def revoke_account_key(key_id: str, authorization: str = Header(...)):
     if item["user_id"] != user_id:
         raise HTTPException(status_code=404, detail="Account key not found")
 
-    now = datetime.utcnow().isoformat() + "Z"
     try:
-        account_keys_table.update_item(
-            Key={"key_id": key_id},
-            UpdateExpression="SET revoked_at = :now",
-            ExpressionAttributeValues={":now": now},
-        )
+        account_keys_table.delete_item(Key={"key_id": key_id})
     except Exception as e:
-        logging.error(f"[ACCOUNT_KEY] Failed to revoke key: {e}")
+        logging.error(f"[ACCOUNT_KEY] Failed to delete key: {e}")
         raise HTTPException(status_code=500, detail="Failed to revoke account key")
 
     # Immediately invalidate cache
     _account_key_cache.pop(key_id, None)
 
-    logging.info(f"[ACCOUNT_KEY] Revoked key {key_id[:20]}... for user {user_id}")
+    logging.info(f"[ACCOUNT_KEY] Deleted key {key_id[:20]}... for user {user_id}")
     return {"status": "revoked"}
 
 

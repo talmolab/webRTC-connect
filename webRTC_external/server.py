@@ -2115,6 +2115,10 @@ async def handle_register(websocket, message):
 
             peer_id = peer_id or f"worker-{key_item.get('username', uid)}-{uuid.uuid4().hex[:4]}"
             metadata["_account_key_id"] = api_key
+            # Store human-readable name label if provided in registration properties
+            worker_name = metadata.get("properties", {}).get("worker_name")
+            if worker_name:
+                metadata["_worker_name"] = worker_name
             logging.info(f"[REGISTER] Account key auth successful for {uid} in room {room_id}")
 
         except HTTPException as e:

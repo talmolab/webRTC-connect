@@ -93,22 +93,23 @@ async def stream(channel: str, request: Request):
     """
     queue: asyncio.Queue = asyncio.Queue(maxsize=256)
 
-    # Register subscriber
-    if channel not in subscribers:
-        subscribers[channel] = []
-    subscribers[channel].append(queue)
-
-    logger.info(
-        f"SSE subscriber connected to {channel} "
-        f"({len(subscribers[channel])} total)"
-    )
-
     async def event_generator():
         try:
-            # Replay buffered events
+            # Replay buffered events BEFORE registering for live updates
+            # to avoid duplicates from publish() pushing to queue during replay
             if channel in buffers:
-                for event in buffers[channel]:
+                for event in list(buffers[channel]):
                     yield f"data: {json.dumps(event)}\n\n"
+
+            # Now register for live events (after replay is done)
+            if channel not in subscribers:
+                subscribers[channel] = []
+            subscribers[channel].append(queue)
+
+            logger.info(
+                f"SSE subscriber connected to {channel} "
+                f"({len(subscribers[channel])} total)"
+            )
 
             # Stream live events
             while True:

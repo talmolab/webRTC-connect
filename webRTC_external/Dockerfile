@@ -14,8 +14,13 @@ COPY *.py /app/
 # Install dependencies
 RUN uv sync
 
-# Port exposed by the container, NOT computer (localhost), 8080 = websocket server, 3478 = TURN server
-EXPOSE 8080 5000 3478/udp 3478/tcp 8001
+# Port exposed by the container, NOT computer (localhost)
+# 8080 = websocket server, 8001 = HTTP API, 8081 = relay server, 3478 = TURN/STUN
+EXPOSE 8080 5000 3478/udp 3478/tcp 8001 8081
 
-# Run the server on container startup
-ENTRYPOINT ["uv", "run", "python3", "server.py"]
+# Copy entrypoint script
+COPY entrypoint.sh /app/
+RUN chmod +x /app/entrypoint.sh
+
+# Run both signaling server and relay server
+ENTRYPOINT ["/app/entrypoint.sh"]

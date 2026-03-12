@@ -886,6 +886,48 @@ async def get_token_workers(token_id: str, authorization: str = Header(...)):
         raise HTTPException(status_code=500, detail="Failed to get connected workers")
 
 
+@app.get("/api/rooms/{room_id}/workers")
+async def get_room_workers(room_id: str, authorization: str = Header(...)):
+    """Get all workers currently connected to a room, regardless of auth method.
+
+    Returns workers authenticated via either legacy tokens or account keys.
+    """
+    claims = get_user_from_auth_header(authorization)
+    user_id = claims["sub"]
+
+    try:
+        # Verify user has access to this room
+        membership = room_memberships_table.get_item(
+            Key={"user_id": user_id, "room_id": room_id}
+        )
+        if "Item" not in membership:
+            raise HTTPException(status_code=403, detail="No access to this room")
+
+        workers = []
+        if room_id in ROOMS:
+            for peer_id, peer_data in ROOMS[room_id].get("peers", {}).items():
+                if peer_data.get("role") != "worker":
+                    continue
+                metadata = peer_data.get("metadata", {})
+                workers.append({
+                    "peer_id": peer_id,
+                    "connected_at": datetime.fromtimestamp(
+                        peer_data.get("connected_at", 0)
+                    ).isoformat() + "Z",
+                    "account_key_id": metadata.get("_account_key_id"),
+                    "token_id": metadata.get("_token_id"),
+                    "worker_name": metadata.get("_worker_name"),
+                })
+
+        return {"workers": workers, "count": len(workers)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[ROOM] Failed to get room workers: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get connected workers")
+
+
 # =============================================================================
 # Room Management Endpoints (2.4)
 # =============================================================================
@@ -1589,7 +1631,6 @@ async def list_account_keys(authorization: str = Header(...)):
                 "name": item.get("name", ""),
                 "created_at": item.get("created_at"),
                 "expires_at": item.get("expires_at"),
-                "revoked_at": item.get("revoked_at"),
             }
             for item in items
         ]
@@ -1616,21 +1657,16 @@ async def revoke_account_key(key_id: str, authorization: str = Header(...)):
     if item["user_id"] != user_id:
         raise HTTPException(status_code=404, detail="Account key not found")
 
-    now = datetime.utcnow().isoformat() + "Z"
     try:
-        account_keys_table.update_item(
-            Key={"key_id": key_id},
-            UpdateExpression="SET revoked_at = :now",
-            ExpressionAttributeValues={":now": now},
-        )
+        account_keys_table.delete_item(Key={"key_id": key_id})
     except Exception as e:
-        logging.error(f"[ACCOUNT_KEY] Failed to revoke key: {e}")
+        logging.error(f"[ACCOUNT_KEY] Failed to delete key: {e}")
         raise HTTPException(status_code=500, detail="Failed to revoke account key")
 
     # Immediately invalidate cache
     _account_key_cache.pop(key_id, None)
 
-    logging.info(f"[ACCOUNT_KEY] Revoked key {key_id[:20]}... for user {user_id}")
+    logging.info(f"[ACCOUNT_KEY] Deleted key {key_id[:20]}... for user {user_id}")
     return {"status": "revoked"}
 
 
@@ -2078,6 +2114,11 @@ async def handle_register(websocket, message):
                 return
 
             peer_id = peer_id or f"worker-{key_item.get('username', uid)}-{uuid.uuid4().hex[:4]}"
+            metadata["_account_key_id"] = api_key
+            # Store human-readable name label if provided in registration properties
+            worker_name = metadata.get("properties", {}).get("worker_name")
+            if worker_name:
+                metadata["_worker_name"] = worker_name
             logging.info(f"[REGISTER] Account key auth successful for {uid} in room {room_id}")
 
         except HTTPException as e:

@@ -2103,6 +2103,7 @@ class FsListRequest(BaseModel):
     peer_id: str
     path: str
     req_id: str
+    offset: int = 0
 
 
 class WorkerMessageRequest(BaseModel):
@@ -2239,6 +2240,7 @@ async def fs_list(
         "type": "fs_list_req",
         "req_id": req.req_id,
         "path": req.path,
+        "offset": req.offset,
     }))
 
     logging.info(f"[FS] List request for {req.path} forwarded to {req.peer_id}")

@@ -3229,11 +3229,11 @@ async def handle_client(websocket):
                         await forward_to_relay(f"worker:{peer_id}", data)
                         logging.info(f"[RELAY] Forwarded fs_list_res from {peer_id}")
 
-                elif msg_type == "job_status":
+                elif msg_type in ("job_status", "job_progress"):
                     job_id = data.get("job_id")
                     if job_id:
                         await forward_to_relay(job_id, data)
-                        logging.info(f"[RELAY] Forwarded job_status for {job_id}: {data.get('status')}")
+                        logging.info(f"[RELAY] Forwarded {msg_type} for {job_id}")
 
                 # Worker → Relay forwarding (path validation and video checks)
                 elif msg_type in ("worker_path_ok", "worker_path_error", "fs_check_videos_response"):

@@ -942,6 +942,7 @@ async def get_room_workers(room_id: str, authorization: str = Header(...)):
                     "account_key_id": metadata.get("_account_key_id"),
                     "token_id": metadata.get("_token_id"),
                     "worker_name": metadata.get("_worker_name"),
+                    "properties": metadata.get("properties", {}),
                 })
 
         return {"workers": workers, "count": len(workers)}
@@ -2104,6 +2105,12 @@ class FsListRequest(BaseModel):
     req_id: str
 
 
+class WorkerMessageRequest(BaseModel):
+    room_id: str
+    peer_id: str
+    message: dict
+
+
 def _get_worker_ws(room_id: str, peer_id: str):
     """Look up a worker's WebSocket from the in-memory room registry.
 
@@ -2236,6 +2243,28 @@ async def fs_list(
 
     logging.info(f"[FS] List request for {req.path} forwarded to {req.peer_id}")
     return {"status": "request_forwarded"}
+
+
+@app.post("/api/worker/message")
+async def worker_message(
+    req: WorkerMessageRequest,
+    authorization: str = Header(...),
+):
+    """Forward an arbitrary message to a worker via its WebSocket.
+
+    Generic message relay: dashboard sends a message dict, signaling server
+    validates auth + room membership, then pushes the message to the worker's
+    WebSocket. Used for use_worker_path, fs_get_mounts, and other worker
+    commands that don't need dedicated endpoints.
+    """
+    await _verify_room_membership(authorization, req.room_id)
+    ws = _get_worker_ws(req.room_id, req.peer_id)
+
+    await ws.send(json.dumps(req.message))
+
+    msg_type = req.message.get("type", "unknown")
+    logging.info(f"[MSG] Forwarded '{msg_type}' to {req.peer_id} in room {req.room_id}")
+    return {"status": "forwarded"}
 
 
 async def handle_register(websocket, message):
@@ -3203,6 +3232,12 @@ async def handle_client(websocket):
                     if job_id:
                         await forward_to_relay(job_id, data)
                         logging.info(f"[RELAY] Forwarded job_status for {job_id}: {data.get('status')}")
+
+                # Worker → Relay forwarding (path validation and video checks)
+                elif msg_type in ("worker_path_ok", "worker_path_error", "fs_check_videos_response"):
+                    if peer_id:
+                        await forward_to_relay(f"worker:{peer_id}", data)
+                        logging.info(f"[RELAY] Forwarded {msg_type} from {peer_id}")
 
                 else:
                     logging.warning(f"Unknown message type: {msg_type}")

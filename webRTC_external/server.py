@@ -3147,6 +3147,18 @@ def get_room(room_id: str):
     return doc
 
 
+async def _ping_loop(websocket, peer_id):
+    """Send periodic pings so workers can detect stale connections through Cloudflare."""
+    try:
+        while True:
+            await asyncio.sleep(30)
+            await websocket.send(json.dumps({"type": "ping"}))
+    except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
+        pass
+    except Exception as e:
+        logging.warning(f"Ping loop error for {peer_id}: {e}")
+
+
 async def handle_client(websocket):
     """Handles incoming messages between peers to facilitate exchange of SDP & ICE candidates.
 
@@ -3166,6 +3178,7 @@ async def handle_client(websocket):
     """
 
     peer_id = None  # Track for cleanup
+    ping_task = None
 
     try:
         async for message in websocket:
@@ -3178,6 +3191,8 @@ async def handle_client(websocket):
                 if msg_type == "register":
                     await handle_register(websocket, data)
                     peer_id = data.get('peer_id')
+                    if ping_task is None:
+                        ping_task = asyncio.create_task(_ping_loop(websocket, peer_id))
 
                 # NEW: Peer discovery
                 elif msg_type == "discover_peers":
@@ -3264,6 +3279,8 @@ async def handle_client(websocket):
         logging.error(f"Error handling client {peer_id}: {e}")
 
     finally:
+        if ping_task:
+            ping_task.cancel()
         # Clean up peer on disconnect
         if peer_id:
             await cleanup_peer(peer_id)

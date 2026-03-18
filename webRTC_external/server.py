@@ -2,6 +2,7 @@
 # dependencies = [
 #   "boto3",
 #   "fastapi",
+#   "httpx",
 #   "python-jose[cryptography]",
 #   "pyotp",
 #   "requests",
@@ -15,6 +16,7 @@ import base64
 import boto3
 import hashlib
 import hmac
+import httpx
 import requests
 import secrets
 import threading
@@ -173,6 +175,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# =============================================================================
+# Relay Server Integration
+# =============================================================================
+RELAY_URL = os.environ.get("RELAY_URL", "http://localhost:8081")
+
+async def forward_to_relay(channel: str, data: dict):
+    """Forward an event to the relay server for SSE fanout.
+
+    Args:
+        channel: Relay channel ID (job_id or "worker:{peer_id}")
+        data: Event data to publish
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{RELAY_URL}/publish/{channel}",
+                json=data,
+                timeout=2.0,
+            )
+    except Exception as e:
+        logging.warning(f"[RELAY] Forward failed for {channel}: {e}")
 
 
 # =============================================================================
@@ -917,6 +942,7 @@ async def get_room_workers(room_id: str, authorization: str = Header(...)):
                     "account_key_id": metadata.get("_account_key_id"),
                     "token_id": metadata.get("_token_id"),
                     "worker_name": metadata.get("_worker_name"),
+                    "properties": metadata.get("properties", {}),
                 })
 
         return {"workers": workers, "count": len(workers)}
@@ -2057,6 +2083,192 @@ async def get_metrics():
     }
 
 
+# =============================================================================
+# Job Submission & Filesystem API (Dashboard → Signaling → Worker)
+# =============================================================================
+
+class JobSubmitRequest(BaseModel):
+    room_id: str
+    peer_id: str
+    config: dict
+
+
+class JobCancelRequest(BaseModel):
+    room_id: str
+    peer_id: str
+
+
+class FsListRequest(BaseModel):
+    room_id: str
+    peer_id: str
+    path: str
+    req_id: str
+    offset: int = 0
+
+
+class WorkerMessageRequest(BaseModel):
+    room_id: str
+    peer_id: str
+    message: dict
+
+
+def _get_worker_ws(room_id: str, peer_id: str):
+    """Look up a worker's WebSocket from the in-memory room registry.
+
+    Args:
+        room_id: Room containing the worker
+        peer_id: Peer ID of the worker
+
+    Returns:
+        WebSocket connection object
+
+    Raises:
+        HTTPException: If room/peer not found or peer is offline
+    """
+    room = ROOMS.get(room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found or no peers online")
+    peer = room["peers"].get(peer_id)
+    if not peer:
+        raise HTTPException(status_code=404, detail=f"Peer {peer_id} not found or offline")
+    ws = peer.get("websocket") if isinstance(peer, dict) else peer
+    if not ws:
+        raise HTTPException(status_code=404, detail=f"Peer {peer_id} has no active connection")
+    return ws
+
+
+async def _verify_room_membership(authorization: str, room_id: str) -> dict:
+    """Verify JWT and confirm user is a member of the room.
+
+    Args:
+        authorization: Authorization header value
+        room_id: Room to check membership for
+
+    Returns:
+        User claims dict with 'sub' and 'username'
+
+    Raises:
+        HTTPException: If auth fails or user is not a room member
+    """
+    user = get_user_from_auth_header(authorization)
+    membership = room_memberships_table.get_item(
+        Key={"user_id": user["sub"], "room_id": room_id}
+    )
+    if "Item" not in membership:
+        raise HTTPException(status_code=403, detail="Not a member of this room")
+    return user
+
+
+@app.post("/api/jobs/submit")
+async def submit_job(
+    req: JobSubmitRequest,
+    authorization: str = Header(...),
+):
+    """Submit a training job to a worker.
+
+    Dashboard POSTs config; signaling server forwards to worker via WebSocket.
+    Also publishes initial 'submitted' status to relay for SSE tracking.
+    """
+    user = await _verify_room_membership(authorization, req.room_id)
+    ws = _get_worker_ws(req.room_id, req.peer_id)
+
+    job_id = f"job_{uuid.uuid4().hex[:8]}"
+
+    # Push job assignment to worker via WebSocket
+    await ws.send(json.dumps({
+        "type": "job_assigned",
+        "job_id": job_id,
+        "config": req.config,
+        "submitted_by": user.get("username", user["sub"]),
+    }))
+
+    # Publish initial status to relay
+    await forward_to_relay(job_id, {
+        "type": "status",
+        "status": "submitted",
+        "job_id": job_id,
+        "worker_peer_id": req.peer_id,
+    })
+
+    logging.info(
+        f"[JOB] Submitted {job_id} to {req.peer_id} in room {req.room_id} "
+        f"by {user.get('username')}"
+    )
+    return {"job_id": job_id}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(
+    job_id: str,
+    req: JobCancelRequest,
+    authorization: str = Header(...),
+):
+    """Cancel a running training job.
+
+    Sends cancel request to worker. Worker kills the training subprocess
+    (not the worker container) and reports status back via WebSocket.
+    """
+    await _verify_room_membership(authorization, req.room_id)
+    ws = _get_worker_ws(req.room_id, req.peer_id)
+
+    # Push cancel to worker via WebSocket
+    await ws.send(json.dumps({
+        "type": "job_cancel",
+        "job_id": job_id,
+    }))
+
+    logging.info(f"[JOB] Cancel sent for {job_id} to {req.peer_id}")
+    return {"status": "cancel_sent"}
+
+
+@app.post("/api/fs/list")
+async def fs_list(
+    req: FsListRequest,
+    authorization: str = Header(...),
+):
+    """Request a directory listing from a worker's filesystem.
+
+    Pushes request to worker via WebSocket. Worker responds with fs_list_res
+    on its WS, which the signaling server forwards to relay for SSE delivery.
+    Dashboard matches the response by req_id.
+    """
+    await _verify_room_membership(authorization, req.room_id)
+    ws = _get_worker_ws(req.room_id, req.peer_id)
+
+    # Push filesystem request to worker via WebSocket
+    await ws.send(json.dumps({
+        "type": "fs_list_req",
+        "req_id": req.req_id,
+        "path": req.path,
+        "offset": req.offset,
+    }))
+
+    logging.info(f"[FS] List request for {req.path} forwarded to {req.peer_id}")
+    return {"status": "request_forwarded"}
+
+
+@app.post("/api/worker/message")
+async def worker_message(
+    req: WorkerMessageRequest,
+    authorization: str = Header(...),
+):
+    """Forward an arbitrary message to a worker via its WebSocket.
+
+    Generic message relay: dashboard sends a message dict, signaling server
+    validates auth + room membership, then pushes the message to the worker's
+    WebSocket. Used for use_worker_path, fs_get_mounts, and other worker
+    commands that don't need dedicated endpoints.
+    """
+    await _verify_room_membership(authorization, req.room_id)
+    ws = _get_worker_ws(req.room_id, req.peer_id)
+
+    await ws.send(json.dumps(req.message))
+
+    msg_type = req.message.get("type", "unknown")
+    logging.info(f"[MSG] Forwarded '{msg_type}' to {req.peer_id} in room {req.room_id}")
+    return {"status": "forwarded"}
+
+
 async def handle_register(websocket, message):
     """Handles the registration of a peer in a room w/ its websocket.
 
@@ -3010,6 +3222,24 @@ async def handle_client(websocket):
                         continue
 
                     await forward_message(sender_pid, target_pid, data)
+
+                # Worker → Relay forwarding (filesystem responses, job status)
+                elif msg_type == "fs_list_res":
+                    if peer_id:
+                        await forward_to_relay(f"worker:{peer_id}", data)
+                        logging.info(f"[RELAY] Forwarded fs_list_res from {peer_id}")
+
+                elif msg_type in ("job_status", "job_progress"):
+                    job_id = data.get("job_id")
+                    if job_id:
+                        await forward_to_relay(job_id, data)
+                        logging.info(f"[RELAY] Forwarded {msg_type} for {job_id}")
+
+                # Worker → Relay forwarding (path validation and video checks)
+                elif msg_type in ("worker_path_ok", "worker_path_error", "fs_check_videos_response"):
+                    if peer_id:
+                        await forward_to_relay(f"worker:{peer_id}", data)
+                        logging.info(f"[RELAY] Forwarded {msg_type} from {peer_id}")
 
                 else:
                     logging.warning(f"Unknown message type: {msg_type}")

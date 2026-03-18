@@ -38,6 +38,15 @@ resource "aws_security_group" "signaling" {
     description = "HTTP API"
   }
 
+  # Relay server port (SSE fanout for training logs and filesystem responses)
+  ingress {
+    from_port   = var.relay_port
+    to_port     = var.relay_port
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_cidr_blocks
+    description = "Relay server SSE"
+  }
+
   # SSH port
   ingress {
     from_port   = 22

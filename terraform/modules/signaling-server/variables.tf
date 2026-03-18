@@ -57,6 +57,12 @@ variable "http_port" {
   default     = 8001
 }
 
+variable "relay_port" {
+  description = "Relay server port (SSE fanout)"
+  type        = number
+  default     = 8081
+}
+
 # TURN Server Configuration
 variable "enable_turn" {
   description = "Enable coturn TURN server on the instance"

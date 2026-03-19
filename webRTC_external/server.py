@@ -3152,6 +3152,7 @@ async def _ping_loop(websocket, peer_id):
     try:
         while True:
             await asyncio.sleep(30)
+            logging.info(f"[PING] Sending ping to {peer_id}")
             await websocket.send(json.dumps({"type": "ping"}))
     except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
         pass

@@ -2096,6 +2096,7 @@ class JobSubmitRequest(BaseModel):
 class JobCancelRequest(BaseModel):
     room_id: str
     peer_id: str
+    mode: str = "cancel"  # "cancel" (stop + skip inference) or "stop" (stop early, continue)
 
 
 class FsListRequest(BaseModel):
@@ -2215,10 +2216,11 @@ async def cancel_job(
     await ws.send(json.dumps({
         "type": "job_cancel",
         "job_id": job_id,
+        "mode": req.mode,
     }))
 
-    logging.info(f"[JOB] Cancel sent for {job_id} to {req.peer_id}")
-    return {"status": "cancel_sent"}
+    logging.info(f"[JOB] {req.mode.title()} sent for {job_id} to {req.peer_id}")
+    return {"status": f"{req.mode}_sent"}
 
 
 @app.post("/api/fs/list")

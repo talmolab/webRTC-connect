@@ -98,6 +98,18 @@ GITHUB_CLIENT_ID = os.environ.get('GITHUB_CLIENT_ID', '')
 GITHUB_CLIENT_SECRET = os.environ.get('GITHUB_CLIENT_SECRET', '')
 GITHUB_REDIRECT_URI = os.environ.get('GITHUB_REDIRECT_URI', '')
 
+# Support multiple OAuth apps: map client_id → client_secret.
+# The primary app is always loaded. Additional apps use numbered env vars:
+#   GITHUB_CLIENT_ID_2, GITHUB_CLIENT_SECRET_2, etc.
+_OAUTH_APPS: dict[str, str] = {}
+if GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET:
+    _OAUTH_APPS[GITHUB_CLIENT_ID] = GITHUB_CLIENT_SECRET
+for i in range(2, 10):
+    cid = os.environ.get(f'GITHUB_CLIENT_ID_{i}', '')
+    csec = os.environ.get(f'GITHUB_CLIENT_SECRET_{i}', '')
+    if cid and csec:
+        _OAUTH_APPS[cid] = csec
+
 # JWT Configuration for SLEAP-RTC tokens
 # Keys can be loaded from files (preferred) or env vars with '|' as newline separator
 def load_jwt_key(file_env: str, inline_env: str) -> str:
@@ -206,6 +218,7 @@ async def forward_to_relay(channel: str, data: dict):
 class GitHubCallbackRequest(BaseModel):
     code: str
     redirect_uri: Optional[str] = None
+    client_id: Optional[str] = None  # for multi-app support
 
 
 class CreateTokenRequest(BaseModel):
@@ -426,20 +439,23 @@ async def github_oauth_callback(request: GitHubCallbackRequest):
     3. Creates/updates user in DynamoDB
     4. Returns a SLEAP-RTC JWT
     """
-    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
-        raise HTTPException(status_code=500, detail="GitHub OAuth not configured")
+    # Resolve which OAuth app credentials to use
+    req_client_id = request.client_id or GITHUB_CLIENT_ID
+    req_client_secret = _OAUTH_APPS.get(req_client_id)
+    if not req_client_id or not req_client_secret:
+        raise HTTPException(status_code=500, detail="GitHub OAuth not configured for this client_id")
 
     # Debug logging
     redirect_uri_to_use = request.redirect_uri or GITHUB_REDIRECT_URI
-    logging.info(f"[AUTH] GitHub callback - code: {request.code[:10]}..., redirect_uri: {redirect_uri_to_use}")
+    logging.info(f"[AUTH] GitHub callback - code: {request.code[:10]}..., client_id: {req_client_id[:10]}..., redirect_uri: {redirect_uri_to_use}")
 
     # Exchange code for access token
     token_response = requests.post(
         "https://github.com/login/oauth/access_token",
         headers={"Accept": "application/json"},
         data={
-            "client_id": GITHUB_CLIENT_ID,
-            "client_secret": GITHUB_CLIENT_SECRET,
+            "client_id": req_client_id,
+            "client_secret": req_client_secret,
             "code": request.code,
             "redirect_uri": redirect_uri_to_use,
         }

@@ -3257,6 +3257,23 @@ async def handle_client(websocket):
                         await forward_to_relay(f"worker:{peer_id}", data)
                         logging.info(f"[RELAY] Forwarded {msg_type} from {peer_id}")
 
+                # E2E encryption: key exchange response + encrypted relay messages
+                elif msg_type in ("key_exchange_response", "encrypted_relay"):
+                    if msg_type == "encrypted_relay":
+                        # Encrypted messages may carry a job_id for job-channel routing
+                        job_id = data.get("job_id")
+                        if job_id:
+                            await forward_to_relay(job_id, data)
+                            logging.info(f"[RELAY] Forwarded encrypted_relay for job {job_id}")
+                        elif peer_id:
+                            await forward_to_relay(f"worker:{peer_id}", data)
+                            logging.info(f"[RELAY] Forwarded encrypted_relay from {peer_id}")
+                    else:
+                        # key_exchange_response goes to the worker's SSE channel
+                        if peer_id:
+                            await forward_to_relay(f"worker:{peer_id}", data)
+                            logging.info(f"[RELAY] Forwarded key_exchange_response from {peer_id}")
+
                 else:
                     logging.warning(f"Unknown message type: {msg_type}")
                     await websocket.send(json.dumps({

@@ -98,6 +98,18 @@ GITHUB_CLIENT_ID = os.environ.get('GITHUB_CLIENT_ID', '')
 GITHUB_CLIENT_SECRET = os.environ.get('GITHUB_CLIENT_SECRET', '')
 GITHUB_REDIRECT_URI = os.environ.get('GITHUB_REDIRECT_URI', '')
 
+# Support multiple OAuth apps: map client_id → client_secret.
+# The primary app is always loaded. Additional apps use numbered env vars:
+#   GITHUB_CLIENT_ID_2, GITHUB_CLIENT_SECRET_2, etc.
+_OAUTH_APPS: dict[str, str] = {}
+if GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET:
+    _OAUTH_APPS[GITHUB_CLIENT_ID] = GITHUB_CLIENT_SECRET
+for i in range(2, 10):
+    cid = os.environ.get(f'GITHUB_CLIENT_ID_{i}', '')
+    csec = os.environ.get(f'GITHUB_CLIENT_SECRET_{i}', '')
+    if cid and csec:
+        _OAUTH_APPS[cid] = csec
+
 # JWT Configuration for SLEAP-RTC tokens
 # Keys can be loaded from files (preferred) or env vars with '|' as newline separator
 def load_jwt_key(file_env: str, inline_env: str) -> str:
@@ -206,6 +218,7 @@ async def forward_to_relay(channel: str, data: dict):
 class GitHubCallbackRequest(BaseModel):
     code: str
     redirect_uri: Optional[str] = None
+    client_id: Optional[str] = None  # for multi-app support
 
 
 class CreateTokenRequest(BaseModel):
@@ -426,20 +439,23 @@ async def github_oauth_callback(request: GitHubCallbackRequest):
     3. Creates/updates user in DynamoDB
     4. Returns a SLEAP-RTC JWT
     """
-    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
-        raise HTTPException(status_code=500, detail="GitHub OAuth not configured")
+    # Resolve which OAuth app credentials to use
+    req_client_id = request.client_id or GITHUB_CLIENT_ID
+    req_client_secret = _OAUTH_APPS.get(req_client_id)
+    if not req_client_id or not req_client_secret:
+        raise HTTPException(status_code=500, detail="GitHub OAuth not configured for this client_id")
 
     # Debug logging
     redirect_uri_to_use = request.redirect_uri or GITHUB_REDIRECT_URI
-    logging.info(f"[AUTH] GitHub callback - code: {request.code[:10]}..., redirect_uri: {redirect_uri_to_use}")
+    logging.info(f"[AUTH] GitHub callback - code: {request.code[:10]}..., client_id: {req_client_id[:10]}..., redirect_uri: {redirect_uri_to_use}")
 
     # Exchange code for access token
     token_response = requests.post(
         "https://github.com/login/oauth/access_token",
         headers={"Accept": "application/json"},
         data={
-            "client_id": GITHUB_CLIENT_ID,
-            "client_secret": GITHUB_CLIENT_SECRET,
+            "client_id": req_client_id,
+            "client_secret": req_client_secret,
             "code": request.code,
             "redirect_uri": redirect_uri_to_use,
         }
@@ -2112,6 +2128,22 @@ class WorkerMessageRequest(BaseModel):
     message: dict
 
 
+class EncryptedRelayRequest(BaseModel):
+    """Request body for encrypted relay endpoints (/api/worker/fs, /api/worker/job)."""
+    room_id: str
+    peer_id: str
+    session_id: str
+    nonce: str
+    ciphertext: str
+
+
+class KeyExchangeRequest(BaseModel):
+    """Request body for key exchange endpoint (/api/worker/key)."""
+    room_id: str
+    peer_id: str
+    message: dict  # {type: "key_exchange", session_id, public_key}
+
+
 def _get_worker_ws(room_id: str, peer_id: str):
     """Look up a worker's WebSocket from the in-memory room registry.
 
@@ -2247,26 +2279,142 @@ async def fs_list(
     return {"status": "request_forwarded"}
 
 
+# ── Shared middleware for worker relay endpoints ─────────────────────────
+
+async def _forward_to_worker(
+    authorization: str,
+    room_id: str,
+    peer_id: str,
+    payload: dict,
+    endpoint_name: str,
+) -> dict:
+    """Validate auth, tag sender, and forward payload to worker's WebSocket.
+
+    All /api/worker/* endpoints use this shared function.
+
+    Args:
+        authorization: Authorization header (Bearer JWT)
+        room_id: Target room
+        peer_id: Target worker peer_id
+        payload: Message dict to forward (encrypted envelope or plaintext)
+        endpoint_name: For logging (e.g., "fs", "job", "key")
+
+    Returns:
+        {"status": "forwarded"}
+    """
+    user = await _verify_room_membership(authorization, room_id)
+    ws = _get_worker_ws(room_id, peer_id)
+
+    # Tag with authenticated sender — set by server, can't be forged by client
+    payload["_sender"] = user.get("username", user.get("sub", "unknown"))
+
+    await ws.send(json.dumps(payload))
+
+    logging.info(
+        f"[{endpoint_name.upper()}] {payload['_sender']} → {peer_id}: forwarded"
+    )
+    return {"status": "forwarded"}
+
+
+# ── Category-specific encrypted relay endpoints ─────────────────────────
+
+@app.post("/api/worker/fs")
+async def worker_fs(
+    req: EncryptedRelayRequest,
+    authorization: str = Header(...),
+):
+    """Forward an encrypted filesystem operation to a worker.
+
+    Accepts encrypted envelopes containing fs_list_req, use_worker_path,
+    or fs_check_videos messages. The signaling server cannot read the
+    encrypted content — it only routes by room_id and peer_id.
+    """
+    payload = {
+        "type": "encrypted_relay",
+        "session_id": req.session_id,
+        "nonce": req.nonce,
+        "ciphertext": req.ciphertext,
+    }
+    return await _forward_to_worker(
+        authorization, req.room_id, req.peer_id, payload, "fs"
+    )
+
+
+@app.post("/api/worker/job")
+async def worker_job(
+    req: EncryptedRelayRequest,
+    authorization: str = Header(...),
+):
+    """Forward an encrypted job operation to a worker.
+
+    Accepts encrypted envelopes containing job_assigned, job_cancel,
+    or job_stop messages. The signaling server cannot read the encrypted
+    content — it only routes by room_id and peer_id.
+    """
+    payload = {
+        "type": "encrypted_relay",
+        "session_id": req.session_id,
+        "nonce": req.nonce,
+        "ciphertext": req.ciphertext,
+    }
+    return await _forward_to_worker(
+        authorization, req.room_id, req.peer_id, payload, "job"
+    )
+
+
+@app.post("/api/worker/key")
+async def worker_key(
+    req: KeyExchangeRequest,
+    authorization: str = Header(...),
+):
+    """Forward a key exchange message to a worker.
+
+    Plaintext (not encrypted) — this is the bootstrapping step that
+    establishes E2E encryption for subsequent messages.
+    """
+    msg_type = req.message.get("type", "")
+    if msg_type != "key_exchange":
+        raise HTTPException(
+            status_code=400,
+            detail="Only key_exchange messages allowed on this endpoint",
+        )
+    return await _forward_to_worker(
+        authorization, req.room_id, req.peer_id, req.message, "key"
+    )
+
+
+# ── Generic relay (backward compat, allowlisted) ────────────────────────
+
+# Only these message types are allowed through the generic endpoint.
+# New clients should use /api/worker/fs, /api/worker/job, /api/worker/key.
+ALLOWED_MESSAGE_TYPES = {
+    "fs_list_req", "use_worker_path", "fs_check_videos",
+    "job_assigned", "job_cancel", "job_stop",
+    "key_exchange", "encrypted_relay",
+}
+
+
 @app.post("/api/worker/message")
 async def worker_message(
     req: WorkerMessageRequest,
     authorization: str = Header(...),
 ):
-    """Forward an arbitrary message to a worker via its WebSocket.
+    """Forward a message to a worker via its WebSocket (backward compat).
 
-    Generic message relay: dashboard sends a message dict, signaling server
-    validates auth + room membership, then pushes the message to the worker's
-    WebSocket. Used for use_worker_path, fs_get_mounts, and other worker
-    commands that don't need dedicated endpoints.
+    Generic relay with type allowlisting. New clients should use the
+    category-specific endpoints (/api/worker/fs, /api/worker/job,
+    /api/worker/key) instead.
     """
-    await _verify_room_membership(authorization, req.room_id)
-    ws = _get_worker_ws(req.room_id, req.peer_id)
-
-    await ws.send(json.dumps(req.message))
-
-    msg_type = req.message.get("type", "unknown")
-    logging.info(f"[MSG] Forwarded '{msg_type}' to {req.peer_id} in room {req.room_id}")
-    return {"status": "forwarded"}
+    msg_type = req.message.get("type", "")
+    if msg_type not in ALLOWED_MESSAGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Message type '{msg_type}' not allowed. "
+            f"Allowed types: {', '.join(sorted(ALLOWED_MESSAGE_TYPES))}",
+        )
+    return await _forward_to_worker(
+        authorization, req.room_id, req.peer_id, req.message, "msg"
+    )
 
 
 async def handle_register(websocket, message):
@@ -3256,6 +3404,23 @@ async def handle_client(websocket):
                     if peer_id:
                         await forward_to_relay(f"worker:{peer_id}", data)
                         logging.info(f"[RELAY] Forwarded {msg_type} from {peer_id}")
+
+                # E2E encryption: key exchange response + encrypted relay messages
+                elif msg_type in ("key_exchange_response", "encrypted_relay"):
+                    if msg_type == "encrypted_relay":
+                        # Encrypted messages may carry a job_id for job-channel routing
+                        job_id = data.get("job_id")
+                        if job_id:
+                            await forward_to_relay(job_id, data)
+                            logging.info(f"[RELAY] Forwarded encrypted_relay for job {job_id}")
+                        elif peer_id:
+                            await forward_to_relay(f"worker:{peer_id}", data)
+                            logging.info(f"[RELAY] Forwarded encrypted_relay from {peer_id}")
+                    else:
+                        # key_exchange_response goes to the worker's SSE channel
+                        if peer_id:
+                            await forward_to_relay(f"worker:{peer_id}", data)
+                            logging.info(f"[RELAY] Forwarded key_exchange_response from {peer_id}")
 
                 else:
                     logging.warning(f"Unknown message type: {msg_type}")
